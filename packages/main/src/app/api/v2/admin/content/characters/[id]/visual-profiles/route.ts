@@ -29,6 +29,7 @@ export async function POST(request: Request, context: Context) {
       request,
       {
         params: { id },
+        resource: { characterId: id },
         target: () => ({ type: "character", id }),
         mutate: (tx, { actor, body }) =>
           createCharacterVisualProfile({ tx, request, actor, characterId: id, body }),

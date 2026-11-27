@@ -4,11 +4,12 @@
 import { characterVideoProductionRecipe } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
+import { resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
 import { workflowRunsWithoutReferences } from "@idream/shared/gen-workflow";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { OPERATIONAL_USER_DATA_CLASS_SQL } from "@/server/modules/metric-data-scope";
+import { creativeRunCostQuote, estimateCreativeRunCost } from "../creative/run-pricing";
 import { jsonRecord as record, jsonStrings as strings } from "../shared/prisma-json";
 import {
   generationRouteRuntimeCompatibility,
@@ -63,11 +64,13 @@ export async function loadCharacterVideoGenerationEstimate() {
         AND jobs."profileVersion" = ${profile.version}
         AND owners."dataClass" IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
     `,
-    generationCostDreamcoins(
-      "video",
-      characterVideoProductionRecipe.outputCount,
-      profile.costMultiplier,
-    ).catch(() => null),
+    resolveGenerationPricingAuthority("video")
+      .then((authority) => creativeRunCostQuote({
+        authority,
+        profileCostMultiplier: profile.costMultiplier,
+        itemCount: characterVideoProductionRecipe.outputCount,
+      }).totalCostDreamcoins)
+      .catch(() => null),
   ]);
   const health = healthRows[0];
   return {
@@ -77,6 +80,25 @@ export async function loadCharacterVideoGenerationEstimate() {
     completedSampleCount: health?.completedSampleCount ?? 0,
     windowDays: CHARACTER_VIDEO_HEALTH_WINDOW_DAYS,
   };
+}
+
+// SPEC: 图片手动生成提交前的单价，按运营可能提交的 profileKey 逐个给出。
+// INTENT: 直接调用 Creative Run 接纳时同一条 profile 解析与计价规则（estimateCreativeRunCost），
+//         所以这里的单价就是接纳后每条单图 Run 记账的数字。profile 已失效或计价规则缺失/歧义时
+//         不给条目——界面宁可不显示，也不显示一个猜出来的数字。
+export async function loadCharacterImageGenerationEstimates(
+  profileKeys: readonly string[],
+) {
+  const estimates = await Promise.all(
+    [...new Set(profileKeys)].map(async (profileKey) => {
+      const quote = await estimateCreativeRunCost({ profileId: profileKey, count: 1 })
+        .catch(() => null);
+      return quote
+        ? { profileKey, perItemCostDreamcoins: quote.perItemCostDreamcoins }
+        : null;
+    }),
+  );
+  return estimates.filter((estimate) => estimate !== null);
 }
 
 export async function findBootstrapGenerationProfile() {

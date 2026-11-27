@@ -382,6 +382,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     "voiceDefaultPreviewResponseSchema",
   ),
 
+  // INVARIANT: 请求带非空 tagIds 时还需要 content.tag.write（与 PUT .../tags 一致）；
+  //            allOf 表达不了条件权限，由 handler 额外校验。
   operation(
     "POST",
     "/api/v2/admin/characters",
@@ -805,11 +807,8 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation(
     "GET",
     "/api/v2/admin/commands/:commandId",
-    allOfAndOneOfBy(
-      "command_target_read",
-      ["dashboard.read"],
-      commandTargetRead,
-    ),
+    // SPEC: 只看目标的读权限；角色级权限包没有 dashboard.read，也必须能读回自己的命令。
+    oneOfBy("command_target_read", ...commandTargetRead),
     "path:commandId",
     "adminCommandStatusSchema",
   ),

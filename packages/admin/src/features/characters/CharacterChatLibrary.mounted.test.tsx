@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CharacterMediaLibraryEntry, CharacterMediaLibraryListResponse } from "@idream/shared/admin";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { CharacterChatLibrary } from "./CharacterChatLibrary";
+import { chatPackImageProfiles } from "./chat-pack-options";
 
 const { operation } = vi.hoisted(() => ({ operation: vi.fn() }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation: (...args: unknown[]) => operation(...args) }));
@@ -81,10 +82,28 @@ describe("Character chat library", () => {
     expect(save[1].body).toEqual({ sourceAssetId: "asset-1", expectedVisualProfileId: "visual-1", expectedVisualProfileVersion: 3,
       description: "A blue jacket beside a closed window", facts: ["blue jacket", "closed window"], absentFacts: ["hat"], nudity: "none", status: "draft" });
     expect(container.textContent).toContain("Chat description saved");
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Not part of a Release");
     expect(container.querySelector('[aria-label="Chat description editor"] [data-image-src]')?.getAttribute("data-image-src")).toBe(entry().url);
+    // SPEC: Use in chat 绕过 Release，按钮旁与成功提示都要说出立即生效。
+    expect(container.querySelector('[data-testid="chat-media-effect-note"]')?.textContent)
+      .toBe("Takes effect immediately for new conversations. Not part of a Release.");
     await click("Use in chat");
     expect(operation.mock.calls.findLast(([id]) => id.startsWith("PATCH "))?.[1].body).toMatchObject({ expectedRevision: 1, status: "published" });
     expect(container.textContent).toContain("Chat media enabled for this identity");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Takes effect immediately for new conversations. Not part of a Release.");
+  });
+
+  it("explains up front that chat media cannot be enabled while the media index is unavailable", async () => {
+    operation.mockImplementation(async (id) => {
+      if (id.startsWith("GET ")) return { ...library([entry()]), capabilities: { describe: true, search: false } };
+      throw new Error(`unexpected write ${id}`);
+    });
+    current = entry();
+    await render();
+    expect(container.querySelector('[data-testid="chat-media-index-unavailable"]')?.textContent)
+      .toBe("The chat media index is not configured, so media cannot be used in chat yet. Save the description as a draft for now.");
+    expect(button("Use in chat").disabled).toBe(true);
+    expect(button("Save description").disabled).toBe(false);
   });
 
   it.each(["published", "withdrawn"] as const)("keeps %s content read-only without release permission", async status => {
@@ -93,6 +112,8 @@ describe("Character chat library", () => {
     expect(textarea("Visible content description").disabled).toBe(true);
     expect(button("Save description").disabled).toBe(true);
     expect(button(status === "published" ? "Withdraw from chat" : "Use in chat").disabled).toBe(true);
+    // Nothing can go live from here, so the immediate-effect warning would be noise.
+    expect(container.querySelector('[data-testid="chat-media-effect-note"]')).toBeNull();
     await click("Save description");
     expect(operation.mock.calls.filter(([id]) => !id.startsWith("GET "))).toHaveLength(0);
   });
@@ -273,6 +294,15 @@ describe("Character chat library", () => {
     });
     const alert = () => container.querySelector('[aria-label="Chat description editor"] [role="alert"]');
 
+    it("says nothing was enabled when the authority refuses because the media index is not configured", async () => {
+      current = entry(); await render();
+      failWrites(new AdminV2RequestError("Configure character media embeddings before publishing chat library items", 503, "unavailable"));
+      await click("Use in chat");
+      expect(alert()?.textContent).toContain("The chat media index is not configured, so nothing was enabled.");
+      expect(alert()?.textContent).toContain("The saved draft is unchanged.");
+      expect(alert()?.textContent).not.toContain("whether the write landed is unknown");
+    });
+
     it("does not offer discard-and-reload or claim nothing was written after a 5xx", async () => {
       current = entry(); await render();
       failWrites(new AdminV2RequestError("pg: deadlock detected in media_library", 500, "internal"));
@@ -404,12 +434,17 @@ describe("Character chat library", () => {
       return { entry: entry(), replayed: false };
     });
     await act(async () => root.render(
-      <CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} defaultProfileId="profile-official-1" />,
+      <CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined}
+        packProfiles={[{ key: "profile-official-1", label: "profile-official-1 · v2" }, { key: "profile-official-2", label: "profile-official-2 · v1" }]} />,
     ));
     await waitUntil(() => Boolean(container.querySelector('[data-testid="batch-pregen-panel"]')));
     const briefInput = [...container.querySelectorAll("label")].find(l => l.textContent?.startsWith("Pack brief"))!.querySelector("input")!;
     const directionsArea = [...container.querySelectorAll("label")].find(l => l.textContent?.startsWith("Scene directions"))!.querySelector("textarea")!;
     await edit(briefInput, "Everyday companion lifestyle pack");
+    // SPEC: profile 从合格线路里选，不再手填。
+    expect([...container.querySelectorAll("label")].find(l => l.textContent?.startsWith("Pack brief"))).toBeDefined();
+    expect([...container.querySelectorAll('[data-testid="batch-pregen-panel"] input')].some(input => input.getAttribute("placeholder") === "profile-key")).toBe(false);
+    await choose("Generation profile", "profile-official-2");
     await edit(directionsArea, "Morning coffee beside a sunlit window\nEvening rooftop cocktail dress with warm bokeh");
     await click("Start batch pack");
 
@@ -418,12 +453,72 @@ describe("Character chat library", () => {
       purpose: "character_library_image_pack",
       targetType: "character",
       targetId: "character-1",
-      profileId: "profile-official-1",
+      profileId: "profile-official-2",
       count: 4,
       outputsPerDirection: 2,
     });
     expect(call?.[1].body.directions).toHaveLength(2);
-    expect(container.textContent).toContain("run-pack-1");
+    // SPEC: 成功提示是可读文字 + 链接，不再打印裸路径。
+    const status = container.querySelector('[role="status"]')!;
+    expect(status.textContent).toContain("Started a pre-generation pack of 4 items.");
+    expect(status.textContent).not.toContain("/admin/creative/runs/");
+    expect(status.querySelector("a")?.getAttribute("href")).toBe("/admin/creative/runs/run-pack-1");
+  });
+
+  it("blocks an image pack when the Character has no qualified, unexpired route", async () => {
+    operation.mockImplementation(async (id) => id.startsWith("GET ") ? library([]) : { entry: entry(), replayed: false });
+    await act(async () => root.render(
+      <CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} packProfiles={[]} />,
+    ));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="batch-pregen-panel"]')));
+    expect(container.textContent).toContain("No qualified, unexpired image route is available.");
+    expect(button("Start batch pack").disabled).toBe(true);
+  });
+
+  it("lists only qualified, unexpired routes once each", () => {
+    const route = (key: string, version: number, result: "qualified" | "failed", stale: boolean) =>
+      ({ generationProfileKey: key, generationProfileVersion: version, result, stale });
+    const visual = { routeQualifications: [
+      route("a", 2, "qualified", false), route("a", 1, "qualified", false),
+      route("b", 1, "qualified", true), route("c", 1, "failed", false), route("d", 3, "qualified", false),
+    ] } as unknown as Parameters<typeof chatPackImageProfiles>[0]["visual"];
+    expect(chatPackImageProfiles({ visual })).toEqual([
+      { key: "a", label: "a · v2" },
+      { key: "d", label: "d · v3" },
+    ]);
+  });
+
+  it("launches a video pack on the fixed production route from selected Character images", async () => {
+    operation.mockImplementation(async (id) => {
+      if (id.startsWith("GET ")) return library([]);
+      if (id === "POST /api/v2/admin/creative/runs") return { batch: { id: "run-video-pack" }, replayed: false };
+      return { entry: entry(), replayed: false };
+    });
+    await act(async () => root.render(
+      <CharacterChatLibrary characterId="character-1" mediaType="video" canWrite canPublish source={null} onCloseSource={() => undefined}
+        packProfiles={[{ key: "profile_video_h3_v1", label: "MiniMax H3 Mystic V5" }]}
+        packSources={[
+          { assetId: "img-1", label: "Primary portrait", url: "/one.webp", thumbnailUrl: null },
+          { assetId: "img-2", label: "Character image {id}", labelValues: { id: 2 }, url: "/two.webp", thumbnailUrl: "/two-thumb.webp" },
+        ]} />,
+    ));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="batch-pregen-panel"]')));
+    expect(container.querySelector('[data-testid="pack-fixed-profile"]')?.textContent).toBe("MiniMax H3 Mystic V5");
+    expect(container.querySelector('[data-testid="batch-pregen-panel"] textarea')).toBeNull();
+    const briefInput = [...container.querySelectorAll("label")].find(l => l.textContent?.startsWith("Pack brief"))!.querySelector("input")!;
+    await edit(briefInput, "Subtle smile and natural motion");
+    expect(button("Start batch pack").disabled).toBe(true);
+    const checkbox = (value: string) => container.querySelector<HTMLInputElement>(`input[type="checkbox"][value="${value}"]`)!;
+    expect(container.textContent).toContain("Character image 2");
+    await act(async () => checkbox("img-2").click());
+    await click("Start batch pack");
+    const call = operation.mock.calls.find(([id]) => id === "POST /api/v2/admin/creative/runs");
+    expect(call?.[1].body).toMatchObject({
+      purpose: "character_library_video_pack",
+      profileId: "profile_video_h3_v1",
+      count: 1,
+      referenceAssetIds: ["img-2"],
+    });
   });
 
   it("applies 1/2/3/R keyboard shortcuts across cards in BatchReviewGrid", async () => {

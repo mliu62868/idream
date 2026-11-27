@@ -1,12 +1,12 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { CharacterCreateWizard } from "./CharacterCreateWizard";
 import {
-  CharacterCreateWizard,
   characterCreateStepRequirements,
   characterCreateSteps,
   isCharacterCreateStepComplete,
-} from "./CharacterCreateWizard";
+} from "./character-create-draft";
 import { characterCreateStepFieldErrors } from "./character-form-validation";
 import { hasAdminZh } from "@/components/admin/i18n";
 import type { AdminPermissionKey } from "@idream/shared/admin";

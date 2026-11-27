@@ -72,6 +72,8 @@ export type SectionContext = {
   readonly permissions: ReadonlySet<AdminPermissionKey>;
   // Scoped write grants can edit an existing Character without allowing creation.
   readonly canCreateCharacters: boolean;
+  // Template-page AI assist names no Character, so a Character-scoped official write cannot back it.
+  readonly canAssistCharacterDrafts: boolean;
   readonly canRead: boolean;
   readonly workMode: WorkMode;
   readonly actorId: string;

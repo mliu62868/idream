@@ -173,8 +173,15 @@ export const contentCharacterModerationResponseSchema = z.object({
 // INTENT: 只做"把已有词表挂到角色上"，不隐式建标签 —— 造词属于 Taxonomy 的治理动作，
 //         从角色页顺手 upsert 出新标签正是分类法失控的起点。
 // INTENT: 标签可随时改回，审计里已有前后标签，不再要求填原因。
+// SPEC: 一个角色可挂的标签集合，PUT 与创建共用同一上限。
+export const characterTagIdsSchema = z.array(adminIdSchema.max(160)).max(24);
+
+// SPEC: expectedTagIds 是可选的乐观并发前提：给了就在事务内与当前标签集合（按集合比较，忽略顺序）
+//       比对，不一致返回 409（details.blocker = `version_mismatch`，details.currentTagIds 为当前集合）。
+// INTENT: 「先读再整组 PUT」的调用方（批量打标签）不带前提时会覆盖并发写入；不传仍是旧语义。
 export const contentCharacterTagsRequestSchema = z.object({
-  tagIds: z.array(adminIdSchema.max(160)).max(24),
+  tagIds: characterTagIdsSchema,
+  expectedTagIds: characterTagIdsSchema.optional(),
   confirmation: confirmationSchema,
 }).strict();
 

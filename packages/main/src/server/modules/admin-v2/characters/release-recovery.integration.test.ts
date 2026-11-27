@@ -22,6 +22,10 @@ describe("Character release recovery without publication", () => {
     await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: { in: commands } } });
     await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commands } } });
     await prisma.characterServing.deleteMany({ where: { characterId: { in: characters } } });
+    const releaseIds = releases.map((release) => release.id);
+    const runs = await prisma.releaseValidationRun.findMany({ where: { releaseId: { in: releaseIds } }, select: { id: true } });
+    await prisma.releaseCheckResult.deleteMany({ where: { validationRunId: { in: runs.map((run) => run.id) } } });
+    await prisma.releaseValidationRun.deleteMany({ where: { releaseId: { in: releaseIds } } });
     await prisma.characterRelease.deleteMany({ where: { projectId: { in: projectIds } } });
     await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
     await prisma.characterProject.deleteMany({ where: { id: { in: projectIds } } });
@@ -42,11 +46,11 @@ describe("Character release recovery without publication", () => {
     return { characterId, content, project, release, serving };
   }
 
-  async function command(commandType: string, targetId: string, expectedVersion: number) {
+  async function command(commandType: string, targetId: string, expectedVersion: number, extraPayload: Record<string, string> = {}) {
     const accepted = await acceptControlPlaneCommand(prisma, {
       environment: "test", actor: { id: actorId, role: "admin" }, idempotencyKey: randomUUID(), commandType,
-      target: { type: commandType.includes("release.") ? "character_release" : "character_serving", id: targetId },
-      expectedVersion, payload: { reason: "Operator abandons obsolete work" }, retryMode: "idempotent", reason: "Operator abandons obsolete work", requestId: randomUUID(),
+      target: { type: commandType.includes("release.") && !commandType.endsWith(".rollback") ? "character_release" : "character_serving", id: targetId },
+      expectedVersion, payload: { reason: "Operator abandons obsolete work", ...extraPayload }, retryMode: "idempotent", reason: "Operator abandons obsolete work", requestId: randomUUID(),
     });
     commands.push(accepted.commandId);
     return executeCharacterReleaseCommand(prisma, { commandId: accepted.commandId, workerId: actorId });
@@ -61,6 +65,51 @@ describe("Character release recovery without publication", () => {
     expect(await executeCharacterReleaseCommand(prisma, { commandId: result.commandId, workerId: actorId })).toEqual(result);
     expect(await prisma.characterReleaseEvent.count({ where: { commandId: result.commandId } })).toBe(1);
     expect(await prisma.adminAuditLog.count({ where: { action: "character.release.withdraw.executed", targetId: release.id } })).toBe(1);
+  });
+
+  // SPEC: 发布校验失败只撤回那个尚未上线的候选；当前 Serving 的 Release 与 Serving 本身一个字节都不动。
+  it("withdraws only the unpublishable candidate when publish validation fails, never the serving Release", async () => {
+    const { characterId, project, release: current, serving } = await fixture("paused");
+    const candidate = await prisma.characterRelease.create({ data: {
+      projectId: project.id, revisionId: current.revisionId, characterContentVersionId: current.characterContentVersionId,
+      generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: `${characterId}-candidate`, status: "approved", readiness: "ready",
+    } });
+    const result = await command("character.release.publish", candidate.id, candidate.version);
+    expect(result).toMatchObject({ status: "failed", errorCode: "release_validation_failed" });
+    expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: candidate.id } })).toMatchObject({
+      status: "withdrawn", readiness: "blocked", version: candidate.version + 1, publishedAt: null, snapshotHash: candidate.snapshotHash,
+    });
+    expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: current.id } })).toEqual(current);
+    expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId } })).toEqual(serving);
+    const failed = await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: result.commandId } });
+    const run = await prisma.releaseValidationRun.findFirstOrThrow({ where: { releaseId: candidate.id } });
+    expect(failed).toMatchObject({ status: "failed", error: {
+      code: "release_validation_failed", blockers: expect.any(Array), validationRunId: run.id,
+      candidateWithdrawn: true, withdrawnReleaseId: candidate.id,
+    } });
+    expect((failed.error as { blockers: string[] }).blockers.length).toBeGreaterThan(0);
+    expect(await prisma.characterReleaseEvent.findMany({ where: { commandId: result.commandId } })).toEqual([
+      expect.objectContaining({ releaseId: candidate.id, type: "character.release.withdrawn" }),
+    ]);
+    expect(await prisma.adminAuditLog.count({ where: { action: "character.release.withdraw.automatic", targetId: candidate.id } })).toBe(1);
+    // 草稿不再被冻结：没有 approved 候选留下。
+    expect(await prisma.characterRelease.count({ where: { projectId: project.id, status: "approved" } })).toBe(0);
+  });
+
+  // INTENT: 回滚由命令自己建出 approved 的回滚 Release；校验失败时它同样不可能上线，不能留下冻结草稿的候选。
+  it("withdraws a rollback Release that fails validation and keeps the current Release serving", async () => {
+    const { characterId, project, release: current, serving } = await fixture("paused");
+    const source = await prisma.characterRelease.create({ data: {
+      projectId: project.id, revisionId: current.revisionId, characterContentVersionId: current.characterContentVersionId,
+      generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: `${characterId}-old`, status: "superseded", readiness: "ready", publishedAt: new Date(0),
+    } });
+    const result = await command("character.release.rollback", characterId, serving.version, { sourceReleaseId: source.id });
+    expect(result).toMatchObject({ status: "failed", errorCode: "release_validation_failed" });
+    const rollback = await prisma.characterRelease.findFirstOrThrow({ where: { rollbackOfReleaseId: source.id } });
+    expect(rollback).toMatchObject({ status: "withdrawn", readiness: "blocked", publishedAt: null });
+    expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: current.id } })).toEqual(current);
+    expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId } })).toEqual(serving);
+    expect(await prisma.characterRelease.count({ where: { projectId: project.id, status: "approved" } })).toBe(0);
   });
 
   it("rejects a stale candidate version without changing it", async () => {

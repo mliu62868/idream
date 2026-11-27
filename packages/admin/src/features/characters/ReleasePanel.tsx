@@ -7,9 +7,8 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { Rocket, RotateCcw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
-import { characterReleaseCreateMutation } from "@/features/image-workflow-transport";
 import {
   StatusBadge,
   WorkspaceButton,
@@ -28,34 +27,24 @@ import type {
   RunCommittedCharacterMutation,
 } from "./character-workspace-permissions";
 import { CharacterHandoffNotice } from "./CharacterHandoff";
+import { ImmediateChangesNotice } from "./ImmediateChangesNotice";
 import { characterAssetPurposeLabel, nextIncompleteCharacterAssetPurpose } from "./character-asset-studio-authority";
 import { ReleaseChangeSummary } from "./PreviewDiff";
-import { commandSubmissionMessage, submitCharacterReleaseCommand, submitWorkspaceServingCommand, type CharacterServingAction } from "./release-command";
+import {
+  characterCommandFailure,
+  characterCommandFailureMessage,
+  characterReleaseCheckLabel,
+  characterServingCommandSummary,
+  commandSubmissionMessage,
+  prepareCharacterPublishTarget,
+  submitCharacterReleaseCommand,
+  submitWorkspaceServingCommand,
+  type CharacterServingAction,
+} from "./release-command";
 
 type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
 
-const releaseCheckLabels: Record<string, string> = {
-  release_generation_authority_kind: "Generation authority",
-  project_character_authority: "Character snapshot",
-  revision_is_immutable_and_pinned: "Pinned immutable revision",
-  soul_snapshot_valid: "Soul snapshot",
-  soul_release_policy: "Soul release policy",
-  companion_product_contract: "Companion product contract",
-  opening_complete: "Opening message",
-  visual_identity_exact_version: "Visual identity version",
-  reference_set_published_snapshot: "Published reference set",
-  generation_route_qualified: "Qualified generation route",
-  release_avatar_manifest_available: "Avatar placement",
-  release_asset_manifest_available: "Image pack placement",
-  release_assets_customer_publishable: "Customer-publishable assets",
-  release_asset_source_authority: "Image source and availability",
-  release_asset_generation_authority: "Asset generation authority",
-  snapshot_hash_matches: "Snapshot integrity",
-};
-
-export function characterReleaseCheckLabel(checkKey: string) {
-  return releaseCheckLabels[checkKey] ?? checkKey.replaceAll("_", " ");
-}
+export { characterReleaseCheckLabel };
 
 // INVARIANT: href null = nothing an operator can fix in the workspace. Never link
 // back to the Release tab itself; that only sends the operator in a circle.
@@ -392,7 +381,27 @@ export function ReleasePanel({
     readonly data: CharacterWorkspaceDetail;
     readonly blockers: string[];
   } | null>(null);
-  const authorityBlockers = authority?.data === data ? authority.blockers : [];
+  const syncAuthorityBlockers = authority?.data === data ? authority.blockers : [];
+  // SPEC: 异步 publish 命令以失败终局时，服务端已在同一事务里撤回候选、解冻草稿；失败证据带
+  //       blockers。直接在这里列出 blockers 与修复入口，不再引导运营去「放弃候选」。
+  // INTENT: 证据描述的是失败那一刻的草稿。运营改过草稿（Project 版本或 Soul 版本变化）后它就
+  //         过时了，退回由客户端预测的 draftBlockers；下一次提交开始时 journal 也会清零。
+  const { lastFailure } = useSyncExternalStore(journal.subscribe, journal.getSnapshot, journal.getSnapshot);
+  const publishFailure = lastFailure?.action === "Release publish"
+    ? characterCommandFailure(lastFailure.status, lastFailure.error)
+    : null;
+  const draftFingerprint = `${data.project.version}:${data.soul.current.contentVersionId}`;
+  const failureKey = lastFailure ? `${lastFailure.commandId ?? ""}:${lastFailure.status}` : null;
+  const [failureBaseline, setFailureBaseline] = useState<{ readonly key: string; readonly draft: string } | null>(null);
+  if (publishFailure && failureKey && failureBaseline?.key !== failureKey) {
+    setFailureBaseline({ key: failureKey, draft: draftFingerprint });
+  }
+  const failureCurrent = publishFailure !== null && failureBaseline?.key === failureKey && failureBaseline.draft === draftFingerprint;
+  // 刷新后的兜底：服务端从被自动撤回候选的校验结果推导，草稿一改即为 null。
+  const persistedFailureBlockers = data.lastFailedPublish?.blockers ?? [];
+  const failureBlockers = failureCurrent ? publishFailure.blockers : persistedFailureBlockers;
+  const showPersistedFailure = !failureCurrent && data.lastFailedPublish !== null && data.lastFailedPublish !== undefined;
+  const authorityBlockers = [...new Set([...syncAuthorityBlockers, ...failureBlockers])];
 
   const submitCommand = async (
     kind: "publish" | "rollback" | "withdraw",
@@ -431,22 +440,12 @@ export function ReleasePanel({
     setError(null);
     setAuthority(null);
     try {
-      const releaseRef = candidate
-        ? { id: candidate.release.id, version: candidate.release.version }
-        : async () => {
-            const mutation = characterReleaseCreateMutation(
-              data.character.id,
-              data.project.version,
-              t("Publish current Character"),
-              `${data.character.id}:publish`,
-            );
-            const created = await adminV2Operation(
-              mutation.operationId,
-              mutation.options,
-            );
-            return { id: created.id, version: created.version };
-          };
-      await submitCommand("publish", releaseRef);
+      await submitCommand("publish", () => prepareCharacterPublishTarget({
+        characterId: data.character.id,
+        projectVersion: data.project.version,
+        candidate: candidate?.release,
+        summary: t("Publish current Character"),
+      }));
     } catch (cause) {
       const blockers = releaseBlockersFromError(cause);
       if (blockers.length > 0) setAuthority({ data, blockers });
@@ -484,7 +483,7 @@ export function ReleasePanel({
         characterId: data.character.id,
         action,
         entityVersion: data.serving.version,
-        summary: t(action === "restore" ? "Restore draft" : action === "retire" ? (data.serving.state === "inactive" ? "Archive draft" : "Retire Character") : action === "pause" ? "Pause serving" : "Resume serving"),
+        summary: t(characterServingCommandSummary(action, data.serving.state)),
       }));
     } catch (cause) {
       setError(
@@ -621,6 +620,7 @@ export function ReleasePanel({
       <div className="space-y-5">
         <ReleaseChangeSummary data={data} />
         <CharacterHandoffNotice data={data} />
+        <ImmediateChangesNotice data={data} />
         {data.releases.length === 0 ? (
           <EmptyState
             hint={canPublish && draftBlockers.length === 0
@@ -663,7 +663,9 @@ export function ReleasePanel({
                   serving={false}
                 />
                 <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-                  {t("Discard this candidate to edit the draft again. The live Character stays unchanged.")}
+                  {candidate.release.readiness === "blocked"
+                    ? t("This candidate failed release checks and can never go live. Discard it to edit the draft again. The live Character stays unchanged.")
+                    : t("Discard this candidate to edit the draft again. The live Character stays unchanged.")}
                 </p>
                 <WorkspaceButton
                   className="mt-2"
@@ -697,6 +699,20 @@ export function ReleasePanel({
 
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Publish Character")}</h3>
+        {failureCurrent && publishFailure ? (
+          <p className="mt-3 text-sm font-medium text-[var(--ad-red-text)]" data-testid="release-publish-failure" role="alert">
+            {t(characterCommandFailureMessage(publishFailure))}
+          </p>
+        ) : showPersistedFailure ? (
+          <p className="mt-3 text-sm font-medium text-[var(--ad-red-text)]" data-testid="release-publish-failure" role="status">
+            {t(persistedFailureBlockers.length > 0
+              ? "The last publish attempt failed its release checks. The candidate was withdrawn and the draft can be edited; fix the items below and publish again."
+              : "The last publish attempt could not go live and the candidate was withdrawn. The draft can be edited; publish again, and contact engineering with the code below if it repeats.")}
+            {persistedFailureBlockers.length === 0 && data.lastFailedPublish ? (
+              <span className="mt-1 block font-mono text-xs text-[var(--ad-text-muted)]">{data.lastFailedPublish.failureCode}</span>
+            ) : null}
+          </p>
+        ) : null}
         {nextPlacement || blockerGuidance.length > 0 ? (
           <div className="mt-3 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]" data-testid="release-blockers">
             {nextPlacement ? (

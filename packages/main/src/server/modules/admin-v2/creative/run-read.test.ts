@@ -51,7 +51,7 @@ describe("Creative Run failure guidance", () => {
     "uses media-neutral fallback guidance for a failed %s Run",
     async (purpose) => {
       findRun.mockResolvedValue(failedRun(purpose));
-      const detail = await getCreativeRunDetail({ runId: "run-failed", actor });
+      const detail = await getCreativeRunDetail({ runId: "run-failed", actor, characterScope: null });
 
       expect(detail.items[0].failure).toEqual({
         errorCode: "provider_failed",
@@ -68,7 +68,7 @@ describe("Creative Run failure guidance", () => {
       retryability: "retryable", workflowKey: "video-workflow", workflowVersion: 1,
     }]);
 
-    const detail = await getCreativeRunDetail({ runId: "run-failed", actor });
+    const detail = await getCreativeRunDetail({ runId: "run-failed", actor, characterScope: null });
 
     expect(detail.items[0].failure).toEqual({
       errorCode: "provider_unavailable",

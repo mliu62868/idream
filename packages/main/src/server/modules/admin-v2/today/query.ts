@@ -20,7 +20,11 @@ import type {
   OpsIncident,
   PrismaClient,
 } from "@prisma/client";
-import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
+import {
+  effectiveCharacterIdsForPermission,
+  effectivePermissions,
+  type CharacterScope,
+} from "@/server/admin/effective-permissions";
 import type { ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -29,6 +33,7 @@ import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { operationalAdminCaseWhere } from "@/server/modules/metric-data-scope";
 import { normalizeWorkPreferences } from "../shared/work-preferences";
+import { creativeRunCharacterId, creativeRunScopeWhere } from "../creative/run-scope";
 import {
   CASE_SEVERITY,
   COMMAND_FAILED_STATUSES,
@@ -150,6 +155,76 @@ type IncidentQueueSelection =
     };
 
 type TodayReadDb = PrismaClient | Prisma.TransactionClient;
+
+/**
+ * SPEC: Today 里 Creative Run 的角色范围。`read` 收窄所有 Run 队列、提及与 Run 上的命令；
+ *       `write` 收窄可认领（unassigned 队列与 claim 按钮）。null = 全局，Set = 只含
+ *       target 为 character 且 targetId 在集合内的 Run（非角色目标的 Run 一律不在范围内）。
+ * INVARIANT: 全局授予的人两者都是 null，每一条 where 原样不变；不持有权限时为空集合。
+ */
+type TodayCreativeScope = {
+  readonly read: CharacterScope;
+  readonly write: CharacterScope;
+  /** 自己发起的、目标是 Creative Run 的命令里，`read` 范围能看到的那部分。 */
+  readonly commandWhere: Prisma.ControlPlaneCommandWhereInput;
+};
+
+const NO_CHARACTERS: CharacterScope = new Set<string>();
+
+async function resolveTodayCreativeScope(
+  db: TodayReadDb,
+  actor: { id: string; role: string },
+  permissions: ReadonlySet<AdminPermissionKey>,
+): Promise<TodayCreativeScope> {
+  const scopeOf = (permission: "creative.run.read" | "creative.run.write") => permissions.has(permission)
+    ? effectiveCharacterIdsForPermission(actor.id, actor.role as ActorRole, permission)
+    : Promise.resolve(NO_CHARACTERS);
+  const [read, write] = await Promise.all([scopeOf("creative.run.read"), scopeOf("creative.run.write")]);
+  const readWhere = creativeRunScopeWhere(read);
+  if (!readWhere) return { read, write, commandWhere: { targetType: "creative_run" } };
+  // INTENT: 命令表没有指向 Run 的关系。Today 只列本人发起、仍未完结（进行中或待对账）的命令，
+  //         所以只需核对这些命令指向的 Run，而不是取出范围内全部历史 Run —— 列表长度随本人
+  //         未完结命令数增长，不随角色的 Run 历史增长。
+  const openTargets = await db.controlPlaneCommand.findMany({
+    where: {
+      actorId: actor.id,
+      targetType: "creative_run",
+      OR: [{ status: { in: ACTIVE_COMMAND_STATUSES } }, { ...UNRECONCILED_COMMAND_WHERE }],
+    },
+    select: { targetId: true },
+    distinct: ["targetId"],
+  });
+  const runs = openTargets.length === 0 ? [] : await db.contentProductionBatch.findMany({
+    where: { AND: [readWhere, { id: { in: openTargets.map((command) => command.targetId) } }] },
+    select: { id: true },
+  });
+  return {
+    read,
+    write,
+    commandWhere: { targetType: "creative_run", targetId: { in: runs.map((run) => run.id) } },
+  };
+}
+
+/** SPEC: 把 Run 查询收窄到 `scope`；null 时原样返回同一个 where，全局行为不变。 */
+function withinCreativeScope(
+  where: Prisma.ContentProductionBatchWhereInput,
+  scope: CharacterScope,
+): Prisma.ContentProductionBatchWhereInput {
+  const narrowed = creativeRunScopeWhere(scope);
+  return narrowed ? { AND: [where, narrowed] } : where;
+}
+
+function creativeScopeSql(target: Prisma.Sql, scope: CharacterScope) {
+  if (scope === null) return Prisma.empty;
+  if (scope.size === 0) return Prisma.sql`AND FALSE`;
+  return Prisma.sql`AND ${target}."targetType" = 'character' AND ${target}."targetId" IN (${Prisma.join([...scope])})`;
+}
+
+function inCreativeScope(row: { targetType: string | null; targetId: string | null }, scope: CharacterScope) {
+  if (scope === null) return true;
+  const characterId = creativeRunCharacterId(row);
+  return characterId !== null && scope.has(characterId);
+}
 
 function sqlSlaFilter(column: Prisma.Sql, sla: TodayAllWorkQuery["sla"], now: Date) {
   if (!sla) return Prisma.empty;
@@ -633,6 +708,7 @@ function projectRow(
   characterNames: ReadonlyMap<string, string> = new Map(),
   snoozedUntilByKey: ReadonlyMap<string, Date | null> = new Map(),
   watchingKeys: ReadonlySet<string> = new Set(),
+  creativeWriteScope: CharacterScope = NO_CHARACTERS,
 ): TodayWorkItem {
   const environment = deploymentEnvironment();
   const snoozedUntil = snoozedUntilByKey.get(`${row.sourceType}:${row.row.id}`)?.toISOString() ?? null;
@@ -804,7 +880,9 @@ function projectRow(
       snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       watching,
-      claim: item.ownerId === null && permissions.has("creative.run.write") ? { entityVersion: item.version } : null,
+      claim: item.ownerId === null && permissions.has("creative.run.write") && inCreativeScope(item, creativeWriteScope)
+        ? { entityVersion: item.version }
+        : null,
     };
   }
   if (row.sourceType !== "control_plane_command") return absurd(row);
@@ -892,10 +970,11 @@ function queue(
   characterNames: ReadonlyMap<string, string>,
   snoozedUntilByKey: ReadonlyMap<string, Date | null>,
   watchingKeys: ReadonlySet<string>,
+  creativeWriteScope: CharacterScope,
 ) {
   return {
     totalCount: rows.totalCount,
-    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions, characterNames, snoozedUntilByKey, watchingKeys)), now, workMode).slice(0, QUEUE_LIMIT),
+    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions, characterNames, snoozedUntilByKey, watchingKeys, creativeWriteScope)), now, workMode).slice(0, QUEUE_LIMIT),
   };
 }
 
@@ -911,10 +990,13 @@ async function scopedCaseWhere(
     : operational;
 }
 
-function readableCommandWhere(permissions: ReadonlySet<AdminPermissionKey>): Prisma.ControlPlaneCommandWhereInput | null {
+function readableCommandWhere(
+  permissions: ReadonlySet<AdminPermissionKey>,
+  creativeScope: TodayCreativeScope,
+): Prisma.ControlPlaneCommandWhereInput | null {
   const targets: Prisma.ControlPlaneCommandWhereInput[] = [];
   if (permissions.has("character.release.read")) targets.push({ targetType: "character_release" });
-  if (permissions.has("creative.run.read")) targets.push({ targetType: "creative_run" });
+  if (permissions.has("creative.run.read")) targets.push(creativeScope.commandWhere);
   if (permissions.has("ops.incident.read")) targets.push({ targetType: "ops_incident" });
   if (permissions.has("case.read")) targets.push({ targetType: "admin_case" });
   if (permissions.has("audit.read")) {
@@ -954,6 +1036,7 @@ async function findQueueRows(input: {
   releaseSelection: ReleaseQueueSelection | null;
   creativeWhere: Prisma.ContentProductionBatchWhereInput | null;
   permissions: ReadonlySet<AdminPermissionKey>;
+  creativeScope: TodayCreativeScope;
   mentions?: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[];
   mentionTotalCount?: number;
   pinnedIds: {
@@ -967,7 +1050,7 @@ async function findQueueRows(input: {
   limit?: number | null;
 }) {
   const limit = input.limit === undefined ? QUEUE_LIMIT : input.limit;
-  const commandPermissionWhere = readableCommandWhere(input.permissions);
+  const commandPermissionWhere = readableCommandWhere(input.permissions, input.creativeScope);
   const commandWhere = input.commandWhere && commandPermissionWhere
     ? { AND: [input.commandWhere, commandPermissionWhere] }
     : null;
@@ -1035,6 +1118,7 @@ async function findRankedMentionIds(input: {
   db: TodayReadDb;
   actor: { id: string; role: string };
   permissions: ReadonlySet<AdminPermissionKey>;
+  creativeScope: TodayCreativeScope;
   now: Date;
   pinnedIds: readonly string[];
   excludeIds?: readonly string[];
@@ -1104,6 +1188,7 @@ async function findRankedMentionIds(input: {
       FROM "admin_collaboration_activities" activity
       JOIN "content_production_batches" target ON target.id = activity."targetId"
       WHERE activity."targetType" = 'creative_run' AND ${input.actor.id} = ANY(activity."mentionedIds")
+        ${creativeScopeSql(Prisma.sql`target`, input.creativeScope.read)}
         ${exclusionSql} ${onlySql}
     `);
   }
@@ -1138,6 +1223,7 @@ async function findMentionRows(input: {
   db: TodayReadDb;
   actor: { id: string; role: string };
   permissions: ReadonlySet<AdminPermissionKey>;
+  creativeScope: TodayCreativeScope;
   now: Date;
   pinnedIds: readonly string[];
   excludeIds?: readonly string[];
@@ -1175,7 +1261,7 @@ async function findMentionRows(input: {
     ? await input.db.opsIncident.findMany({ where: { id: { in: incidentIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
     : [];
   const creativeRuns = input.permissions.has("creative.run.read") && creativeIds.length > 0
-    ? await input.db.contentProductionBatch.findMany({ where: { id: { in: creativeIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
+    ? await input.db.contentProductionBatch.findMany({ where: withinCreativeScope({ id: { in: creativeIds } }, input.creativeScope.read), ...(input.limit === undefined ? {} : { take: input.limit }) })
     : [];
   const casesById = new Map(cases.map((row) => [row.id, row]));
   const incidentsById = new Map(incidents.map((row) => [row.id, row]));
@@ -1225,6 +1311,7 @@ export async function buildTodayProjection(input: {
   const releaseReadable = input.permissions.has("character.release.read");
   const creativeReadable = input.permissions.has("creative.run.read");
   const releaseCharacterIds = releaseReadable ? await releaseReadCharacterScope(input.actor) : null;
+  const creativeScope = await resolveTodayCreativeScope(db, input.actor, input.permissions);
   const preferences = normalizeWorkPreferences(await db.operationalWorkPreference.findMany({
     where: { actorId: input.actor.id },
     select: {
@@ -1273,7 +1360,7 @@ export async function buildTodayProjection(input: {
       }
     : null;
   const activeCreativeWhere = creativeReadable
-    ? { lifecycleState: "active", id: withoutIds(snoozedCreativeIds) }
+    ? withinCreativeScope({ lifecycleState: "active", id: withoutIds(snoozedCreativeIds) }, creativeScope.read)
     : null;
   const pinnedIds = {
     cases: preferences.filter((item) => item.pinned && item.sourceType === "admin_case").map((item) => item.sourceId),
@@ -1286,6 +1373,7 @@ export async function buildTodayProjection(input: {
     db,
     actor: input.actor,
     permissions: input.permissions,
+    creativeScope,
     now,
     pinnedIds: preferences.filter((item) => item.pinned && item.sourceType === "collaboration_mention").map((item) => item.sourceId),
     excludeIds: snoozedMentionIds,
@@ -1308,6 +1396,7 @@ export async function buildTodayProjection(input: {
         AND: [activeCreativeWhere, { ownerId: input.actor.id }, { OR: [{ dueAt: { lte: endOfToday } }, { verificationState: "failed" }] }],
       },
       permissions: input.permissions,
+      creativeScope,
       mentions,
       mentionTotalCount: mentionRows.totalCount,
       pinnedIds,
@@ -1321,6 +1410,7 @@ export async function buildTodayProjection(input: {
       releaseSelection: activeReleaseSelection,
       creativeWhere: activeCreativeWhere,
       permissions: input.permissions,
+      creativeScope,
       mentions,
       mentionTotalCount: mentionRows.totalCount,
       pinnedIds,
@@ -1338,10 +1428,12 @@ export async function buildTodayProjection(input: {
       releaseSelection: input.permissions.has("character.project.write") && activeReleaseSelection
         ? { ...activeReleaseSelection, owner: "unassigned" }
         : null,
+      // SPEC: 「待认领」只列能认领的 Run —— 范围按 creative.run.write 再收一次。
       creativeWhere: input.permissions.has("creative.run.write") && activeCreativeWhere
-        ? { AND: [activeCreativeWhere, { ownerId: null }] }
+        ? withinCreativeScope({ AND: [activeCreativeWhere, { ownerId: null }] }, creativeScope.write)
         : null,
       permissions: input.permissions,
+      creativeScope,
       pinnedIds,
       diagnostics: input.diagnostics,
   });
@@ -1359,9 +1451,10 @@ export async function buildTodayProjection(input: {
       commandWhere: null,
       releaseSelection: releaseReadable ? { scope: "recently_resolved", recentCutoff, characterIds: releaseCharacterIds } : null,
       creativeWhere: creativeReadable
-        ? { lifecycleState: { in: ["closed", "archived"] }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }
+        ? withinCreativeScope({ lifecycleState: { in: ["closed", "archived"] }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }, creativeScope.read)
         : null,
       permissions: input.permissions,
+      creativeScope,
       pinnedIds,
       diagnostics: input.diagnostics,
   });
@@ -1378,6 +1471,7 @@ export async function buildTodayProjection(input: {
     db,
     actor: input.actor,
     permissions: input.permissions,
+    creativeScope,
     now,
     pinnedIds: preferences.filter((item) => item.pinned && item.sourceType === "collaboration_mention").map((item) => item.sourceId),
     onlyIds: [...watchedMentionIds],
@@ -1404,9 +1498,10 @@ export async function buildTodayProjection(input: {
         }
       : null,
     creativeWhere: creativeReadable && watchedCreativeIds.length > 0
-      ? { id: { in: watchedCreativeIds } }
+      ? withinCreativeScope({ id: { in: watchedCreativeIds } }, creativeScope.read)
       : null,
     permissions: input.permissions,
+    creativeScope,
     mentions: watchedMentionRows.rows,
     mentionTotalCount: watchedMentionRows.totalCount,
     pinnedIds,
@@ -1415,11 +1510,11 @@ export async function buildTodayProjection(input: {
 
   const characterNames = await characterNamesFor([...myShift.rows, ...nextBest.rows, ...unassigned.rows, ...watching.rows, ...recentlyResolved.rows]);
   return todayProjectionSchema.parse({
-    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
-    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
-    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
-    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
-    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
+    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys, creativeScope.write),
+    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys, creativeScope.write),
+    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys, creativeScope.write),
+    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys, creativeScope.write),
+    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys, creativeScope.write),
     asOf: now.toISOString(),
     freshness: "fresh",
     workMode,
@@ -1541,6 +1636,7 @@ export async function buildTodayAllWork(input: {
     });
   }
   const caseScope = await scopedCaseWhere(db, input.actor, input.permissions);
+  const creativeScope = await resolveTodayCreativeScope(db, input.actor, input.permissions);
   const requestedOwnerId = query.ownerId ?? (query.owner === "mine" ? input.actor.id : query.owner === "unassigned" ? null : undefined);
   const ownerWhere = requestedOwnerId === undefined ? {} : { ownerId: requestedOwnerId };
   const slaWhere = query.sla === "none" ? null : query.sla === "overdue" ? { lt: now } : (() => {
@@ -1572,6 +1668,7 @@ export async function buildTodayAllWork(input: {
     db,
     actor: input.actor,
     permissions: input.permissions,
+    creativeScope,
     now,
     pinnedIds: idsFor("collaboration_mention", "pinned"),
     excludeIds: idsFor("collaboration_mention", "snoozed"),
@@ -1620,13 +1717,13 @@ export async function buildTodayAllWork(input: {
   const creativeEligible = (!query.domain || query.domain === "creative_run")
     && (!query.status || query.status === "active")
     && creativeSeverityWhere !== null;
-  const creativeWhere = input.permissions.has("creative.run.read") && creativeEligible ? {
+  const creativeWhere = input.permissions.has("creative.run.read") && creativeEligible ? withinCreativeScope({
     lifecycleState: "active",
     id: withoutIds(idsFor("creative_run", "snoozed")),
     ...ownerWhere,
     ...creativeSeverityWhere,
     ...(query.sla ? { dueAt: slaWhere } : {}),
-  } satisfies Prisma.ContentProductionBatchWhereInput : null;
+  } satisfies Prisma.ContentProductionBatchWhereInput, creativeScope.read) : null;
   const rows = await findQueueRows({
     db,
     caseWhere,
@@ -1647,6 +1744,7 @@ export async function buildTodayAllWork(input: {
     } : null,
     creativeWhere,
     permissions: input.permissions,
+    creativeScope,
     mentions: mentionRows.rows,
     mentionTotalCount: mentionRows.totalCount,
     pinnedIds,
@@ -1659,7 +1757,7 @@ export async function buildTodayAllWork(input: {
   const characterNames = await characterNamesFor(rows.rows);
   const watchingKeys = new Set(preferences.filter((item) => item.watching).map((item) => `${item.sourceType}:${item.sourceId}`));
   const allItems = sortItems(
-    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions, characterNames, snoozedUntilByKey, watchingKeys)),
+    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions, characterNames, snoozedUntilByKey, watchingKeys, creativeScope.write)),
     now,
     workMode,
   ).filter((item) => matchesAllWorkFilters(item, query, input.actor.id, now));

@@ -1,5 +1,6 @@
 import {
   characterPortfolioResponseSchema,
+  type CharacterLifecycle,
   type CharacterPortfolioFacets,
   type CharacterPerformanceSummary,
   type CharacterPerformanceWindow,
@@ -610,17 +611,22 @@ async function portfolioViewCounts(
   queues: Awaited<ReturnType<typeof workQueueCharacterIds>>,
 ): Promise<CharacterPortfolioFacets["viewCounts"]> {
   const state = Prisma.sql`COALESCE(s.state, 'inactive')`;
-  const stateScope = query.servingState
-    ? Prisma.sql`${state} = ${query.servingState}`
+  const lifecycleScope = [
+    query.servingState ? Prisma.sql`${state} = ${query.servingState}` : null,
+    query.lifecycle ? portfolioLifecycleSql(query.lifecycle) : null,
+  ].filter((clause): clause is Prisma.Sql => clause !== null);
+  const stateScope = lifecycleScope.length > 0
+    ? Prisma.join(lifecycleScope, " AND ")
     : query.excludeArchived ? Prisma.sql`${state} <> 'retired'` : Prisma.sql`TRUE`;
   const queueCount = (ids: Iterable<string>) => Prisma.sql`COUNT(*) FILTER (WHERE ${stateScope} AND ${portfolioIdsSql(ids)})::int`;
   const [row] = await db.$queryRaw<Array<CharacterPortfolioFacets["viewCounts"]>>(Prisma.sql`
     SELECT
       COUNT(*) FILTER (WHERE ${state} <> 'retired' ${taskScopeSql})::int AS "all",
-      COUNT(*) FILTER (WHERE ${state} = 'inactive' ${taskScopeSql})::int AS draft,
-      COUNT(*) FILTER (WHERE ${state} = 'live' ${taskScopeSql})::int AS live,
-      COUNT(*) FILTER (WHERE ${state} = 'paused' ${taskScopeSql})::int AS paused,
-      COUNT(*) FILTER (WHERE ${state} = 'retired' ${taskScopeSql})::int AS archived,
+      COUNT(*) FILTER (WHERE ${portfolioLifecycleSql("draft")} ${taskScopeSql})::int AS draft,
+      COUNT(*) FILTER (WHERE ${portfolioLifecycleSql("live")} ${taskScopeSql})::int AS live,
+      COUNT(*) FILTER (WHERE ${portfolioLifecycleSql("paused")} ${taskScopeSql})::int AS paused,
+      COUNT(*) FILTER (WHERE ${portfolioLifecycleSql("archived")} ${taskScopeSql})::int AS archived,
+      COUNT(*) FILTER (WHERE ${portfolioLifecycleSql("retired")} ${taskScopeSql})::int AS retired,
       ${queueCount(attention)} AS attention,
       ${queueCount(incomplete)} AS live_asset_pack_incomplete,
       ${queueCount(queues.pending_changes)} AS pending_changes,
@@ -634,6 +640,23 @@ async function portfolioViewCounts(
     WHERE ${scopeSql}
   `);
   return row;
+}
+
+// SPEC: 生命周期与 characterLifecycleOf 同一口径：没有 Serving 行按 inactive（草稿）算；
+//       retired 按是否保留 currentRelease 分成归档草稿与已退役。
+function portfolioLifecycleSql(lifecycle: CharacterLifecycle) {
+  const state = Prisma.sql`COALESCE(s.state, 'inactive')`;
+  switch (lifecycle) {
+    case "draft":
+      return Prisma.sql`${state} = 'inactive'`;
+    case "live":
+    case "paused":
+      return Prisma.sql`${state} = ${lifecycle}`;
+    case "archived":
+      return Prisma.sql`(${state} = 'retired' AND s."currentReleaseId" IS NULL)`;
+    case "retired":
+      return Prisma.sql`(${state} = 'retired' AND s."currentReleaseId" IS NOT NULL)`;
+  }
 }
 
 function portfolioIdsSql(ids: Iterable<string>) {
@@ -739,6 +762,7 @@ export async function listCharacterPortfolioData(
     ${sortJoin}
     WHERE ${scopeSql} ${taskScopeSql}
       ${query.servingState ? Prisma.sql`AND ${servingStateSql} = ${query.servingState}` : Prisma.empty}
+      ${query.lifecycle ? Prisma.sql`AND ${portfolioLifecycleSql(query.lifecycle)}` : Prisma.empty}
       ${query.excludeArchived ? Prisma.sql`AND ${servingStateSql} <> 'retired'` : Prisma.empty}
   `;
   const { items: page, pageInfo } = await paginateAdminKeyset({

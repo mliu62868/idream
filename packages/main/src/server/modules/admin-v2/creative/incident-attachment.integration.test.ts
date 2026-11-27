@@ -168,6 +168,7 @@ describe("Creative Run Incident attachment", () => {
     expect(await getCreativeRunDetail({
       runId,
       actor: { id: actorId, role: "admin" },
+      characterScope: null,
     })).toMatchObject({ relatedIncidentIds: [incidentId], version: 2 });
     expect(await prisma.adminAuditLog.count({
       where: { actorId, action: "creative.run.incident_attached", targetId: runId },

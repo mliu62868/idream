@@ -1,7 +1,12 @@
 import { prisma } from "@/server/lib/db";
 import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import { queryParams, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import {
+  assertCharacterInScope,
+  queryParams,
+  type AdminActor,
+} from "@/server/modules/admin-v2/shared/authority";
+import type { CharacterScope } from "@/server/admin/effective-permissions";
 import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/content-production-state";
 import { creativeRunListResponseSchema } from "@idream/shared/admin";
 import {
@@ -17,6 +22,7 @@ import {
 } from "./run-state";
 import { jsonRecord, nonEmptyStrings } from "./json";
 import { escapeLike } from "../shared/escape-like";
+import { creativeRunCharacterId, creativeRunScopeWhere } from "./run-scope";
 
 // SPEC: Creative Run 的两个只读投影 —— 运营列表与单轮详情。
 // INTENT: 只读、无事务，能看到写路径看不到的东西（结算事实、Attempt / transport 谱系、
@@ -119,8 +125,11 @@ async function ledgerFacts(jobIds: readonly string[]): Promise<CreativeRunLedger
 export async function listCreativeRuns(input: {
   readonly requestUrl: string;
   readonly actor: AdminActor;
+  /** SPEC: null = every Run; otherwise only Runs that target one of these Characters. */
+  readonly characterScope: CharacterScope;
 }) {
   void input.actor;
+  const scopeWhere = creativeRunScopeWhere(input.characterScope);
   const query = queryParams({ url: input.requestUrl }, "GET /api/v2/admin/creative/runs");
   const queryIdentity = {
     purpose: query.purpose,
@@ -163,7 +172,9 @@ export async function listCreativeRuns(input: {
         : undefined;
     const roots = await prisma.contentProductionBatch.findMany({
       where: operationalContentProductionBatchWhere({
-        ...(cursorWhere ? { AND: [cursorWhere] } : {}),
+        ...(cursorWhere || scopeWhere
+          ? { AND: [cursorWhere, scopeWhere].filter((where) => where !== undefined && where !== null) }
+          : {}),
         purpose: query.purpose,
         lifecycleState: query.lifecycleState,
         workflowStage: query.workflowStage,
@@ -296,6 +307,8 @@ function deriveCreativeRunSummary(
 export async function getCreativeRunDetail(input: {
   readonly runId: string;
   readonly actor: AdminActor;
+  /** SPEC: null = every Run; otherwise a Run outside these Characters is a 403. */
+  readonly characterScope: CharacterScope;
 }) {
   void input.actor;
   const run = await prisma.contentProductionBatch.findFirst({
@@ -311,6 +324,7 @@ export async function getCreativeRunDetail(input: {
     },
   });
   if (!run) throw Errors.notFound("Creative Run not found");
+  assertCharacterInScope(input.characterScope, "creative.run.read", creativeRunCharacterId(run));
   const itemIds = run.items.map((item) => item.id);
   const jobIds = run.items.flatMap((item) => item.jobId ? [item.jobId] : []);
   const [decisions, attempts, ledgerEntries, profile, recipe] = await Promise.all([

@@ -16,6 +16,8 @@ vi.mock("@/server/lib/auth", () => ({
 vi.mock("@/server/admin/effective-permissions", () => ({
   effectivePermissions: vi.fn(async () => new Set(mocks.permissions)),
   effectiveCharacterIdsForPermission: vi.fn(async () => null),
+  effectiveCharacterScopes: vi.fn(async (_userId: string, _role: string, keys: readonly string[]) =>
+    new Map(keys.map((key) => [key, null]))),
 }));
 
 import { actorWithPermission } from "./authority";

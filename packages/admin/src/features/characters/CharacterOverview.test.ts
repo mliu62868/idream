@@ -1,10 +1,8 @@
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
-import { characterReleaseOrdinals } from "./character-workspace-format";
 import {
   characterNotLiveReasons,
-  characterOperationsFacts,
   characterRecentAssets,
   characterVideoSourceBroken,
 } from "./CharacterOverview";
@@ -85,10 +83,6 @@ function workspace(overrides: {
   } as unknown as CharacterWorkspaceDetail;
 }
 
-function factValue(data: CharacterWorkspaceDetail, label: string) {
-  return characterOperationsFacts(data, (date) => date).find((fact) => fact.label === label);
-}
-
 type VisualAsset = CharacterWorkspaceDetail["visual"]["anchors"][number];
 
 // SPEC: 一条完整的视觉素材投影；各用例只覆盖自己关心的字段。
@@ -161,70 +155,6 @@ describe("Character detail facts", () => {
   });
 
 
-  it("states the live serving posture instead of hiding it behind technical status", () => {
-    const live = workspace({
-      servingState: "live",
-      publishedRelease: true,
-      missingPurposes: ["character_hero", "character_chat"],
-      changedFields: ["imageUrl", "assetPack"],
-    });
-    expect(factValue(live, "Serving")).toMatchObject({ value: "live", alert: false });
-    // 按发布时间的序号，不是行级锁版本号（发布页显示的也是这个）。
-    expect(factValue(live, "Current release")).toMatchObject({ value: "#1 · 2026-07-24T00:40:28.926Z" });
-    expect(factValue(live, "Unpublished changes")).toMatchObject({ value: "{fields} fields changed", values: { fields: 2 }, alert: true });
-    expect(factValue(live, "Image pack")).toMatchObject({ value: "Live {live}/{total} · Draft {draft}/{total}", values: { live: 1, draft: 1, total: 3 }, alert: true });
-    expect(factValue(live, "Owner")).toBeUndefined();
-  });
-
-
-  // SPEC: 创作者改了已发布角色后，运营在角色概览直接看到「待发布修订」。
-  it("flags a saved revision the live release does not serve yet", () => {
-    const edited = workspace({
-      servingState: "live",
-      publishedRelease: true,
-      pendingRevision: { revision: 3, createdAt: "2026-09-20T08:00:00.000Z" },
-    });
-    // 两个相近概念合成一条，不再分两格。
-    expect(factValue(edited, "Pending revision")).toBeUndefined();
-    expect(factValue(edited, "Unpublished changes")).toEqual({
-      label: "Unpublished changes",
-      value: "Revision #{revision} not published",
-      values: { revision: 3 },
-      alert: true,
-    });
-    expect(factValue(workspace({ servingState: "live", publishedRelease: true }), "Unpublished changes"))
-      .toMatchObject({ value: "None", alert: false });
-    expect(factValue(workspace({ servingState: "live", publishedRelease: true, changedFields: ["a"], pendingRevision: { revision: 3, createdAt: "2026-09-20T08:00:00.000Z" } }), "Unpublished changes"))
-      .toMatchObject({ value: "{fields} fields changed · revision #{revision}", values: { fields: 1, revision: 3 } });
-  });
-
-  it("flags an unpublished character on serving and release instead of showing a blank", () => {
-    const draft = workspace({ servingState: null });
-    expect(factValue(draft, "Serving")).toMatchObject({ value: "not_live", alert: true });
-    expect(factValue(draft, "Current release")).toMatchObject({ value: "None published", alert: true });
-    expect(factValue(draft, "Unpublished changes")).toMatchObject({ value: "None", alert: false });
-    expect(factValue(draft, "Image pack")).toMatchObject({ values: { live: 3, draft: 3, total: 3 }, alert: false });
-    expect(factValue(draft, "Owner")).toBeUndefined();
-  });
-
-
-  // SPEC: 线上 1/3、素材页草稿已选 2 张曾显示成同一个数。
-  it("states live and draft image progress side by side", () => {
-    const data = characterWorkspaceDetail({
-      journey: {
-        release: { servingState: "paused" },
-        assetPack: {
-          live: { completed: 1, total: 3, availablePurposes: ["character_cover"], missingPurposes: ["character_hero", "character_chat"] },
-          draft: { completed: 2, total: 3, availablePurposes: ["character_cover", "character_hero"], missingPurposes: ["character_chat"] },
-        },
-      },
-    });
-    expect(characterOperationsFacts(data, (date) => date).find((fact) => fact.label === "Image pack")).toMatchObject({
-      value: "Paused {live}/{total} · Draft {draft}/{total}",
-      values: { live: 1, draft: 2, total: 3 },
-    });
-  });
-
   // SPEC: 「为什么没上线」一屏回答，带修复入口。
   it("explains why a Character is not live with fix links", () => {
     const blocker = { code: "generation_route_unqualified", message: "Route problem", deepLink: "/admin/ops/profiles" };
@@ -239,36 +169,5 @@ describe("Character detail facts", () => {
       href: "/admin/characters/character-fixture?tab=release",
     });
     expect(characterNotLiveReasons(characterWorkspaceDetail({ serving: { state: "live" } }))).toEqual([]);
-  });
-
-  // SPEC: 身份图片按资产 ID 去重；"视频源图片"数的是图片，不是视频。
-  // INTENT: 原先 anchors + references 直接相加，重叠的图被数两次（真实角色 15 张显示成 16）；
-  // 而 visual.videoSources 服务端就是一条 type:"image" 查询，却被标成 "Videos" —— 于是
-  // "视频 15" 实际是 15 张图片，该角色只有 1 个视频。
-  it("counts identity images once and never calls source images videos", () => {
-    const detail = workspace({});
-    // shared-1 同时在 anchors 和 references 里，available 的去重后是 shared-1 + anchor-2。
-    expect(factValue(detail, "Identity reference images")).toMatchObject({ value: "2", alert: false });
-    expect(factValue(detail, "Images usable as video sources")).toMatchObject({ value: "1", alert: false });
-    expect(characterOperationsFacts(detail, (date) => date).some((fact) => fact.label === "Videos")).toBe(false);
-  });
-
-
-  it("flags a character that has no usable identity image or video source", () => {
-    const empty = workspace({ anchors: [], references: [], videoSources: [] });
-    expect(factValue(empty, "Identity reference images")).toMatchObject({ value: "0", alert: true });
-    expect(factValue(empty, "Images usable as video sources")).toMatchObject({ value: "0", alert: true });
-  });
-
-
-  // SPEC: 详情页的线上版本标签必须和发布页一致。
-  // INTENT: 两处都曾渲染行级锁版本 release.version，修发布页时漏了这里，
-  // 结果详情页写 v1、发布页写 #2，同一个版本两种叫法。
-  it("labels the live release with the same ordinal the Release tab shows", () => {
-    const detail = workspace({ publishedRelease: true, servingState: "live" });
-    const ordinal = characterReleaseOrdinals(detail.releases).get(
-      detail.serving?.currentReleaseId ?? "",
-    );
-    expect(factValue(detail, "Current release")?.value).toContain(`#${ordinal}`);
   });
 });

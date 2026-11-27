@@ -25,6 +25,7 @@ import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-validati
 import { characterCommandCoordinationKey } from "../characters/command-coordination";
 import { executeAcceptedAdminCommand } from "./executor";
 import { generationProfileHealth } from "../creative/retry-executor";
+import { creativeRunAuthorityResource } from "../creative/run-scope";
 import { resolveGenerationAttemptRetryAuthority } from "@/server/modules/generation/generation-attempt-authority";
 
 type JsonObject = Record<string, unknown>;
@@ -594,8 +595,11 @@ export function migrateChatSessionRelease(request: Request, sessionId: string) {
   });
 }
 
-export function retryFailedCreativeRun(request: Request, runId: string) {
+export async function retryFailedCreativeRun(request: Request, runId: string) {
+  // SPEC: a retry is scoped to the Run's Character; a Run outside every Character needs a global grant.
+  const resource = await creativeRunAuthorityResource(runId);
   return executeCommand(request, "POST /api/v2/admin/creative/runs/:id/commands/retry-failed", {
+    resource,
     target: { type: "creative_run", id: runId },
     confirmation: `${runId}:retry-failed`,
     replay: "frozen_payload",

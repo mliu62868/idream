@@ -14,6 +14,7 @@ type Authority = {
   actor: { id: string; role: string } | null;
   permissions: AdminPermissionKey[];
   canCreateCharacters: boolean;
+  canAssistCharacterDrafts: boolean;
 };
 type State = Authority & {
   error: unknown;
@@ -65,12 +66,12 @@ export function useAdminAuthority(initial: Authority) {
     if (rejection) {
       const denied = adminPermissionKeySchema.safeParse(rejection.permission);
       if (rejection.status === 401 || rejection.unverified) {
-        flushSync(() => setState(current => ({ ...current, permissions: [], canCreateCharacters: false })));
+        flushSync(() => setState(current => ({ ...current, permissions: [], canCreateCharacters: false, canAssistCharacterDrafts: false })));
       } else if (denied.success) {
         // Retire the denied intent immediately while preserving unrelated read access.
         // Commit before awaiting bootstrap: React batching must not merge revoke/regrant
         // into unchanged props and leave the rejected confirmation alive.
-        flushSync(() => setState(current => ({ ...current, permissions: current.permissions.filter(key => key !== denied.data), canCreateCharacters: false })));
+        flushSync(() => setState(current => ({ ...current, permissions: current.permissions.filter(key => key !== denied.data), canCreateCharacters: false, canAssistCharacterDrafts: false })));
       }
     }
     try {
@@ -89,6 +90,7 @@ export function useAdminAuthority(initial: Authority) {
       }
       setState(current => ({
         actor: bootstrap.actor, permissions: bootstrap.permissions, canCreateCharacters: bootstrap.canCreateCharacters,
+        canAssistCharacterDrafts: bootstrap.canAssistCharacterDrafts,
         error: null, dataRefreshVersion: current.dataRefreshVersion + (refreshData ? 1 : 0), retainedPermissions: null,
       }));
     } catch (error) {
@@ -98,6 +100,7 @@ export function useAdminAuthority(initial: Authority) {
         ...current,
         permissions: [],
         canCreateCharacters: false,
+        canAssistCharacterDrafts: false,
         error,
         retainedPermissions: isTransientAuthorityFailure(error)
           ? current.retainedPermissions ?? current.permissions

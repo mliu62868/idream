@@ -3,17 +3,14 @@
 import { characterCommandMessage, renderCharacterCommandMessage } from "./character-command-copy";
 
 import { useAdminI18n } from "@/components/admin/i18n";
-import { useAdminFormat } from "@/components/admin/ui/format";
 import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
 import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import Link from "next/link";
-import Image from "next/image";
 import {
   type AdminPermissionKey,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { ImageIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -21,25 +18,16 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type KeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { CharacterVideoLibrary } from "@/features/characters/CharacterVideoLibrary";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
-import { CharacterDuplicateButton } from "@/features/characters/CharacterDuplicateButton";
+import { CharacterDuplicateReceipt } from "@/features/characters/CharacterDuplicateButton";
 import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
 import { CharacterSoulPanel } from "@/features/characters/CharacterSoulPanel";
-import {
-  characterWorkspaceTabFromSearch,
-  type CharacterWorkspaceTab,
-} from "@/features/image-workflow-transport";
-import {
-  LoadingWorkspace,
-  WorkspaceButton,
-  fieldClass,
-} from "@/features/operations/WorkspaceUi";
-import { AdminV2RequestError, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { characterWorkspaceTabFromSearch } from "@/features/image-workflow-transport";
+import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
   adminV2Operation,
   adminV2OperationAllowed,
@@ -52,23 +40,25 @@ import {
 import { createLatestRequestGate, type LatestRequestToken } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
-import { submitWorkspaceServingCommand } from "./release-command";
 import { CharacterHandoffAction } from "./CharacterHandoff";
-import { CharacterFeaturedToggle, FeaturedAuthorityProvider } from "@/features/content-merchandising/CharacterFeaturedToggle";
+import { CharacterWorkspaceHeader } from "./CharacterWorkspaceHeader";
+import { CharacterWorkspaceNav } from "./CharacterWorkspaceNav";
+import { useCharacterWorkspaceTabRoute } from "./use-character-workspace-tab-route";
+import { FeaturedAuthorityProvider } from "@/features/content-merchandising/CharacterFeaturedToggle";
 import { CharacterWorkspaceActionsProvider } from "./character-workspace-actions";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterPortfolio } from "./CharacterPortfolio";
 import { characterPrimaryActionCopy } from "./character-primary-action-copy";
 import { CharacterOverview } from "./CharacterOverview";
+import { CharacterContentSettings } from "./CharacterContentSettings";
 import { VisualIdentityPanel } from "./VisualIdentityPanel";
 import { PreviewDiff } from "./PreviewDiff";
 import { CharacterImageLibrary } from "./CharacterImageLibrary";
 import { CharacterPlacementEditor } from "./CharacterPlacementEditor";
 import { ReleasePanel } from "./ReleasePanel";
 import { MonitorPanel } from "./MonitorPanel";
-import { characterHasNoUnpublishedChanges, characterMonitorNeedsAttention, characterReleaseOrdinals } from "./character-workspace-format";
-import { characterPortfolioQuery, parseCharacterPortfolioUrl } from "./portfolio-query";
+import { characterMonitorNeedsAttention } from "./character-workspace-format";
 import { PerformancePanel } from "./PerformancePanel";
 import {
   CharacterMediaOperationsCard,
@@ -80,75 +70,14 @@ import {
   type CharacterCommandRecoveryCopy,
 } from "./character-command-journal";
 
-type Tab = CharacterWorkspaceTab;
-
-const characterWorkspaceTabLabels: Record<Tab, string> = {
-  project: "Overview",
-  soul: "Persona & appearance",
-  visual: "Visual identity",
-  assets: "Images",
-  video: "Videos",
-  voice: "Voice",
-  release: "Release and preview",
-  monitor: "Live monitoring",
-};
-
-export function characterWorkspaceTabLabel(tab: Tab) {
-  return characterWorkspaceTabLabels[tab];
-}
-
-export type CharacterWorkspaceArea = "settings" | "assets" | "operations";
-
-const characterWorkspaceAreaLabels: Record<CharacterWorkspaceArea, string> = {
-  settings: "Character settings",
-  assets: "Character assets",
-  operations: "Character operations",
-};
-
-// INTENT: 角色详情只暴露三种运营心智：定义角色、管理素材、决定线上使用什么。
-// 旧 tab 继续作为 URL 和功能权威，避免一次导航收敛演变成流程或接口重写。
-export const characterWorkspaceAreaTabs: Record<
-  CharacterWorkspaceArea,
-  readonly Tab[]
-> = {
-  settings: ["project", "soul", "visual", "voice"],
-  assets: ["assets", "video"],
-  operations: ["release", "monitor"],
-};
-
-const ALL_WORKSPACE_TABS: readonly Tab[] = [
-  "project",
-  "soul",
-  "visual",
-  "voice",
-  "assets",
-  "video",
-  "release",
-  "monitor",
-];
-
-const characterWorkspaceAreas = Object.keys(
+export {
+  CHARACTER_WORKSPACE_TABS,
+  characterWorkspaceAreaForTab,
+  characterWorkspaceAreaLabel,
   characterWorkspaceAreaTabs,
-) as CharacterWorkspaceArea[];
-
-export function characterWorkspaceAreaLabel(area: CharacterWorkspaceArea) {
-  return characterWorkspaceAreaLabels[area];
-}
-
-export function characterWorkspaceAreaForTab(tab: Tab): CharacterWorkspaceArea {
-  return (
-    characterWorkspaceAreas.find((area) =>
-      characterWorkspaceAreaTabs[area].includes(tab),
-    ) ?? "settings"
-  );
-}
-
-function setCharacterWorkspaceTabUrl(tab: Tab, options: Parameters<typeof setWorkspaceUrl>[1]) {
-  const roster = new URLSearchParams(window.location.search).get("roster");
-  const params = new URLSearchParams({ tab });
-  if (roster !== null) params.set("roster", roster);
-  setWorkspaceUrl(params, options);
-}
+  characterWorkspaceTabLabel,
+  type CharacterWorkspaceArea,
+} from "./CharacterWorkspaceNav";
 
 type CustomerPublicationPrepRecovery = {
   characterId: string;
@@ -323,7 +252,6 @@ function CharacterDetail({
     [granted],
   );
   const { t } = useAdminI18n();
-  const format = useAdminFormat();
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<CharacterWorkspaceError | null>(null);
@@ -333,9 +261,6 @@ function CharacterDetail({
     useState<CustomerPublicationPrepRecovery | null>(null);
   const [reclaimingVoiceRequestId, setReclaimingVoiceRequestId] = useState<
     string | null
-  >(null);
-  const [quickActionBusy, setQuickActionBusy] = useState<
-    "pause" | "resume" | "visibility" | null
   >(null);
   // SPEC: 待决命令与写入锁只有 journal 一份权威，组件通过订阅镜像它。
   // INTENT: 这两个事实此前同时存在于 2 个 useState、2 个 useRef 和 coordinator 内部共 5 份
@@ -357,17 +282,14 @@ function CharacterDetail({
   );
   const requestGate = useRef(createLatestRequestGate());
   const latestLoad = useRef<{ token: LatestRequestToken; promise: Promise<CharacterWorkspaceDetail> } | null>(null);
-  // INVARIANT: 初值不许读地址栏或 journal 快照 —— 服务端得出 "project"、客户端首帧
-  // 得出 URL 里的 tab，两边分叉就是 hydration mismatch。真实 tab 在挂载 effect 里对齐。
-  const [tab, setTab] = useState<Tab>("project");
-  const [locationHash, setLocationHash] = useState("");
-  const navigateToWorkspaceTab = useCallback((next: Tab, options: Parameters<typeof setWorkspaceUrl>[1]) => {
-    setTab(next);
-    setLocationHash(options?.hash ?? "");
-    setCharacterWorkspaceTabUrl(next, options);
-  }, []);
-  const [returnQuery, setReturnQuery] = useState<string | null>(null);
-  const tabRef = useRef(tab);
+  const {
+    tab,
+    locationHash,
+    returnQuery,
+    navigateToWorkspaceTab,
+    selectTab,
+    onWorkspaceLinkClick,
+  } = useCharacterWorkspaceTabRoute({ id, data, journal });
   const load = useCallback(async () => {
     const request = requestGate.current.begin();
     setLoading(true);
@@ -675,62 +597,6 @@ function CharacterDetail({
     //         算差值，好让"刚提交就刷新页面"的场景等满命令的最短受理窗口再去查。
     () => (pendingCommand ? journal.initialRecoveryDelayMs(pendingCommand) : 0),
   );
-  useEffect(() => {
-    tabRef.current = tab;
-  }, [tab]);
-  useEffect(() => {
-    // 水合完成后把 tab 对齐到外部状态（地址栏 + 持久化命令）：初值必须与服务端一致，
-    // 真实 tab 只能在这里读。一次性对齐，之后由用户操作与 popstate 驱动。
-    /* eslint-disable react-hooks/set-state-in-effect -- one-shot hydration from the address bar */
-    setTab(
-      journal.hasPersistedCommand()
-        ? "release"
-        : characterWorkspaceTabFromSearch(window.location.search),
-    );
-    setLocationHash(window.location.hash);
-    const roster = new URLSearchParams(window.location.search).get("roster");
-    if (roster !== null) setReturnQuery(characterPortfolioQuery(parseCharacterPortfolioUrl(roster)));
-    /* eslint-enable react-hooks/set-state-in-effect */
-    // 只在挂载时跑一次。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useEffect(() => {
-    const targetId = locationHash.replace(/^#/, "");
-    const isVisualTarget = tab === "visual" && [
-        "visual-production-readiness",
-        "visual-identity-version",
-        "visual-reference-set",
-        "route-qualification-workbench",
-      ].includes(targetId);
-    const isImagePlacement = tab === "assets" && /^character-image-placement-character_(cover|hero|chat)$/.test(targetId);
-    if (!isVisualTarget && !isImagePlacement) return;
-    const frame = window.requestAnimationFrame(() => {
-      const target = document.getElementById(targetId);
-      target?.scrollIntoView({ block: "start" });
-      const focusTarget = target?.hasAttribute("tabindex")
-        ? target
-        : target?.querySelector<HTMLElement>(isVisualTarget ? "summary" : "button:not([disabled])");
-      focusTarget?.focus({ preventScroll: true });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [tab, locationHash, data?.visual.imageReadiness?.state, data?.visual.readiness.ready]);
-  useEffect(() => {
-    const restoreTab = () => {
-      if (journal.getSnapshot().writesLocked || data?.activeCommand) {
-        navigateToWorkspaceTab(tabRef.current, { mode: "replace" });
-        return;
-      }
-      setTab(characterWorkspaceTabFromSearch(window.location.search));
-      setLocationHash(window.location.hash);
-    };
-    const syncHash = () => setLocationHash(window.location.hash);
-    window.addEventListener("popstate", restoreTab);
-    window.addEventListener("hashchange", syncHash);
-    return () => {
-      window.removeEventListener("popstate", restoreTab);
-      window.removeEventListener("hashchange", syncHash);
-    };
-  }, [data?.activeCommand, id, journal, navigateToWorkspaceTab]);
   if (!permissions.read) return permissionDenied("character.project.read");
   if (loading && !data && !pendingCommand) {
     return <LoadingWorkspace label="Loading character workspace" />;
@@ -836,93 +702,6 @@ function CharacterDetail({
       </section>
     );
   }
-  const selectTab = (next: Tab) => {
-    if (
-      (journal.getSnapshot().writesLocked || data.activeCommand) &&
-      next !== tab
-    )
-      return;
-    navigateToWorkspaceTab(next, { mode: "push" });
-  };
-  const onWorkspaceLinkClick = (event: ReactMouseEvent<HTMLElement>) => {
-    if (
-      event.defaultPrevented ||
-      event.button !== 0 ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.shiftKey ||
-      event.altKey
-    ) {
-      return;
-    }
-    const target = event.target;
-    const anchor =
-      target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
-    if (!anchor || anchor.target === "_blank" || anchor.getAttribute("href")?.startsWith("#")) return;
-    const destination = new URL(anchor.href, window.location.href);
-    if (
-      destination.origin !== window.location.origin ||
-      destination.pathname !== window.location.pathname ||
-      !destination.searchParams.has("tab")
-    ) {
-      return;
-    }
-    const next = characterWorkspaceTabFromSearch(destination.search);
-    event.preventDefault();
-    if (
-      (journal.getSnapshot().writesLocked || data.activeCommand) &&
-      next !== tab
-    ) {
-      return;
-    }
-    navigateToWorkspaceTab(next, { hash: destination.hash, mode: "push" });
-  };
-  const onTabKey = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    current: number,
-  ) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    if (mutationNotice || pendingCommand || data.activeCommand) return;
-    const visibleTabs = ALL_WORKSPACE_TABS;
-    const nextIndex =
-      event.key === "Home"
-        ? 0
-        : event.key === "End"
-          ? visibleTabs.length - 1
-          : (current +
-              (event.key === "ArrowRight" ? 1 : -1) +
-              visibleTabs.length) %
-            visibleTabs.length;
-    const next = visibleTabs[nextIndex];
-    selectTab(next);
-    document.getElementById(`character-tab-${next}`)?.focus();
-  };
-  const workspaceName =
-    data.preview.draft?.name ?? data.preview.live?.name ?? data.character.name;
-  const workspaceImageUrl =
-    data.preview.draft?.imageUrl ??
-    data.preview.live?.imageUrl ??
-    data.character.imageUrl;
-  const servingState = data.journey.release.servingState;
-  const releaseId = data.journey.release.currentReleaseId;
-  const releaseOrdinal = releaseId ? characterReleaseOrdinals(data.releases).get(releaseId) : undefined;
-  const servingLabel = servingState === "live" ? "Live"
-    : servingState === "paused" ? "Paused"
-    : servingState === "retired" ? (releaseId ? "Retired" : "Archived")
-    : "Not live";
-  const discoveryLabel = servingState === "live" && data.character.visibility === "public" ? "Listed in Explore"
-    : servingState === "live" && data.character.visibility === "unlisted" ? "Direct link only"
-    : servingState === "live" && data.character.visibility === "private" ? "Private"
-    : null;
-  const { completed, total } = data.journey.assetPack.draft;
-  const draftStatus = characterHasNoUnpublishedChanges(data) && releaseOrdinal
-    ? t("Matches release #{version}", { version: releaseOrdinal })
-    : data.journey.release.candidateReleaseId
-      ? t("Pending publish")
-      : releaseId && data.preview.changedFields.length
-        ? t("{count} unpublished changes", { count: data.preview.changedFields.length })
-        : null;
   const nextStep = data.journey.primaryAction;
   const nextStepCopy = characterPrimaryActionCopy[nextStep.code];
   const releaseShowsNextStep = tab === "release" && nextStep.code === "create_primary_portrait";
@@ -932,62 +711,11 @@ function CharacterDetail({
     destination.searchParams.has("tab") &&
     characterWorkspaceTabFromSearch(destination.search) === tab &&
     (!destination.hash || destination.hash === locationHash);
-  const visibleTabs = ALL_WORKSPACE_TABS;
   const writesLocked = commandWritesLocked || data.activeCommand !== null;
   const guardedPermissions = characterWorkspacePermissions(
     granted,
     writesLocked,
   );
-  const quickToggleServing = async (action: "pause" | "resume") => {
-    if (!data.serving || quickActionBusy || writesLocked) return;
-    setQuickActionBusy(action);
-    setError(null);
-    try {
-      const message = await submitWorkspaceServingCommand(journal, {
-        characterId: data.character.id,
-        action,
-        entityVersion: data.serving.version,
-        summary: t(action === "pause" ? "Pause serving" : "Resume serving"),
-      });
-      if (message) setError(renderCharacterCommandMessage(message, t));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Serving action failed");
-    } finally {
-      setQuickActionBusy(null);
-    }
-  };
-  const quickToggleVisibility = async () => {
-    if (!data.serving || data.serving.state !== "live" || quickActionBusy || writesLocked) return;
-    const visibility = data.character.visibility === "unlisted" ? "public" : "unlisted";
-    const action = visibility === "public" ? "Show in Explore" : "Hide from Explore";
-    setQuickActionBusy("visibility");
-    setError(null);
-    try {
-      await runCommittedMutation({
-        action,
-        commit: () =>
-          adminV2Operation("POST /api/v2/admin/content/characters/:id/visibility", {
-            path: { id: data.character.id },
-            body: {
-              visibility,
-              entityVersion: data.serving!.version,
-              reason: action,
-              confirmation: `${data.character.id}:visibility:${visibility}`,
-            },
-          }),
-      });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not update Explore visibility");
-    } finally {
-      setQuickActionBusy(null);
-    }
-  };
-  const hasQuickPublish =
-    servingState !== "retired" &&
-    tab !== "release" &&
-    data.journey.assetPack.draft.completed === data.journey.assetPack.draft.total &&
-    (!characterHasNoUnpublishedChanges(data) ||
-      Boolean(data.journey.release.candidateReleaseId));
   const detailSection = (
     <section
       aria-labelledby="character-workspace-title"
@@ -998,115 +726,20 @@ function CharacterDetail({
           {t("Back to character results")}
         </Link>
       ) : null}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          {workspaceImageUrl ? (
-            <Image
-              alt={t("{name} primary role portrait", { name: workspaceName })}
-              className="h-16 w-16 shrink-0 rounded-lg object-cover"
-              height={64}
-              loading="eager"
-              src={workspaceImageUrl}
-              unoptimized
-              width={64}
-            />
-          ) : (
-            <div className="grid h-16 w-16 shrink-0 place-items-center rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-text-muted)]">
-              <ImageIcon aria-hidden="true" className="h-5 w-5" />
-            </div>
-          )}
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <h2
-                className="truncate text-xl font-semibold"
-                id="character-workspace-title"
-              >
-                {workspaceName}
-              </h2>
-            </div>
-            <dl className="mt-1 space-y-1 text-sm">
-              <div className="flex flex-wrap items-baseline gap-x-2">
-                <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Customer availability")}</dt>
-                <dd data-testid="character-customer-status">
-                  <strong>{t(servingLabel)}</strong>
-                  {releaseOrdinal ? ` · ${t("Release")} #${releaseOrdinal}` : ""}
-                  {discoveryLabel ? ` · ${t(discoveryLabel)}` : ""}
-                </dd>
-              </div>
-              <div className="flex flex-wrap items-baseline gap-x-2">
-                <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Draft")}</dt>
-                <dd data-testid="character-draft-status">
-                  {draftStatus ? `${draftStatus} · ` : ""}{t("{completed}/{total} display images ready", { completed, total })}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-        {hasQuickPublish && guardedPermissions.publishRelease ? (
-          <WorkspaceButton
-            disabled={writesLocked || quickActionBusy !== null}
-            onClick={() => selectTab("release")}
-            tone="primary"
-          >
-            {t("Preview and publish")}
-          </WorkspaceButton>
-        ) : null}
-        {tab !== "release" && servingState === "live" && guardedPermissions.publishRelease ? (
-          <WorkspaceButton
-            disabled={writesLocked || quickActionBusy !== null}
-            onClick={() => void quickToggleServing("pause")}
-          >
-            {t("Pause serving")}
-          </WorkspaceButton>
-        ) : tab !== "release" && servingState === "paused" && guardedPermissions.publishRelease ? (
-          <WorkspaceButton
-            disabled={writesLocked || quickActionBusy !== null}
-            onClick={() => void quickToggleServing("resume")}
-            tone="primary"
-          >
-            {t("Resume serving")}
-          </WorkspaceButton>
-        ) : null}
-        {tab !== "release" && servingState === "live" &&
-        ["public", "unlisted"].includes(data.character.visibility) &&
-        guardedPermissions.manageCatalogVisibility ? (
-          <WorkspaceButton
-            disabled={writesLocked || quickActionBusy !== null}
-            onClick={() => void quickToggleVisibility()}
-          >
-            {t(data.character.visibility === "unlisted" ? "Show in Explore" : "Hide from Explore")}
-          </WorkspaceButton>
-        ) : null}
-        {tab !== "project" && servingState === "live" && permissions.readContent ? (
-          <CharacterFeaturedToggle
-            canWrite={guardedPermissions.manageFeatured}
-            characterId={data.character.id}
-            compact
-          />
-        ) : null}
-        {canCreateCharacters && permissions.writeProject ? (
-          <CharacterDuplicateButton characterId={id} />
-        ) : null}
-        <details className="text-xs text-[var(--ad-text-muted)] sm:text-right">
-          <summary className="cursor-pointer py-2 font-semibold">
-            {t("Technical status")}
-          </summary>
-          <p>
-            {t("Draft v")}
-            {data.project.version} {t("· Serving v")}
-            {data.serving?.version ?? 0}
-          </p>
-          <p className="mt-1 break-all">
-            {t("Character ID")} · {data.character.id}
-          </p>
-          <p className="mt-1 break-all">
-            {t("Workspace ID")} · {data.project.id}
-          </p>
-          <p className="mt-1">{t("Updated")} {format.dateTime(data.character.updatedAt)}</p>
-        </details>
-        </div>
-      </div>
+      <CharacterWorkspaceHeader
+        canCreateCharacters={canCreateCharacters}
+        data={data}
+        guardedPermissions={guardedPermissions}
+        id={id}
+        journal={journal}
+        onError={setError}
+        onOpenRelease={() => selectTab("release")}
+        permissions={permissions}
+        runCommittedMutation={runCommittedMutation}
+        tab={tab}
+        writesLocked={writesLocked}
+      />
+      <CharacterDuplicateReceipt characterId={id} />
       {error ? (
         <div
           className="mt-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
@@ -1179,51 +812,19 @@ function CharacterDetail({
           )}
         </div>
       ) : null}
-      <label className="mt-4 block sm:hidden">
-        <span className="sr-only">{t("Workspace page")}</span>
-        <select
-          aria-label={t("Workspace page")}
-          className={fieldClass}
-          disabled={writesLocked}
-          onChange={(event) => selectTab(event.target.value as Tab)}
-          value={tab}
-        >
-          {visibleTabs.map((item) => (
-            <option key={item} value={item}>
-              {t(characterWorkspaceTabLabel(item))}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div
-        className="mt-4 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"
-        role="tablist"
-        aria-label={t("Character workspace")}
-      >
-        {visibleTabs.map((item, index) => (
-          <button
-            aria-controls={`character-panel-${item}`}
-            aria-selected={tab === item}
-            className={cn(
-              "min-h-11 shrink-0 border-b-2 px-3 text-sm focus-visible:outline focus-visible:outline-2",
-              tab === item
-                ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]"
-                : "border-transparent text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]",
-            )}
-            disabled={writesLocked && item !== tab}
-            id={`character-tab-${item}`}
-            key={item}
-            onClick={() => selectTab(item)}
-            onKeyDown={(event) => onTabKey(event, index)}
-            role="tab"
-            tabIndex={tab === item ? 0 : -1}
-            type="button"
-          >
-            {t(characterWorkspaceTabLabel(item))}
-          </button>
-        ))}
-      </div>
-      {["project", "soul", "assets"].includes(tab) ? (
+      <CharacterWorkspaceNav
+        keyboardLocked={Boolean(mutationNotice || pendingCommand || data.activeCommand)}
+        onSelectTab={selectTab}
+        tab={tab}
+        writesLocked={writesLocked}
+      />
+      {/* SPEC: 交接是 creator 向运营交代「做完了」的一句话事实，从不阻塞发布、发布也不读它。
+          只给能写项目但无发布权的账号按钮；有发布权的人只在发布页看到 CharacterHandoffNotice。
+          INTENT: 选完最后一张展示图会自动跳到发布页；创作者在那里只有禁用的发布按钮，
+          交接必须也在发布页出现，否则本职链路的唯一出口在落地页上消失。 */}
+      {["project", "soul", "assets", "release"].includes(tab) &&
+      permissions.writeProject &&
+      !permissions.publishRelease ? (
         <CharacterHandoffAction
           canWrite={guardedPermissions.writeProject}
           data={data}
@@ -1243,24 +844,28 @@ function CharacterDetail({
         aria-labelledby={`character-tab-${tab}`}
       >
         {tab === "project" ? (
-          <CharacterOverview
-            canReadContent={permissions.readContent}
-            canWriteTags={guardedPermissions.writeTags}
-            canManageChatTools={guardedPermissions.manageChatTools}
-            data={data}
-          />
+          <CharacterOverview data={data} />
         ) : tab === "soul" ? (
-          <CharacterSoulPanel
-            actorId={actorId}
-            canWrite={guardedPermissions.writeProject}
-            data={data}
-            key={data.soul.current.contentVersionId}
-            runCommittedMutation={runCommittedMutation}
-          />
+          <div className="space-y-5">
+            <CharacterSoulPanel
+              actorId={actorId}
+              canWrite={guardedPermissions.writeProject}
+              data={data}
+              key={data.soul.current.contentVersionId}
+              runCommittedMutation={runCommittedMutation}
+            />
+            <CharacterContentSettings
+              canManageChatTools={guardedPermissions.manageChatTools}
+              canReadContent={permissions.readContent}
+              canWriteTags={guardedPermissions.writeTags}
+              characterId={data.character.id}
+            />
+          </div>
         ) : tab === "visual" ? (
           <VisualIdentityPanel
             actorId={actorId}
             data={data}
+            locationHash={locationHash}
             navigateToTab={selectTab}
             permissions={guardedPermissions}
             runCommittedMutation={runCommittedMutation}
@@ -1316,7 +921,6 @@ function CharacterDetail({
         ) : tab === "voice" ? (
           <CharacterVoicePanel
             canActivate={guardedPermissions.publishRelease}
-            canManageDefaults={guardedPermissions.manageVoiceDefaults}
             canPreview={permissions.previewVoice}
             canWrite={guardedPermissions.writeProject}
             data={data}
@@ -1340,15 +944,21 @@ function CharacterDetail({
         ) : (
           // SPEC: 「线上」= 表现证据 → 组合决策 → 发布护栏，自上而下就是运营复盘的顺序。
           <div className="space-y-5">
+            {/* SPEC: 「发布健康」只回答线上 Release 技术上是否在正常服务（keep / rollback_review…）；
+                「经营表现与建议」回答顾客反应与曝光取舍（promote / pause / retire）。两套词表各管一事，
+                标题必须让运营一眼分清，免得把两边的建议读成互相矛盾。 */}
             <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" open={characterMonitorNeedsAttention(data)}>
-              <summary className="cursor-pointer p-4 font-semibold">
-                {t("Release monitoring")}
+              <summary className="cursor-pointer p-4">
+                <span className="font-semibold">{t("Release health")}</span>
+                <span className="mt-0.5 block text-xs text-[var(--ad-text-muted)]">
+                  {t("Whether the live release is serving correctly. Its suggestions concern the release itself.")}
+                </span>
               </summary>
               <div className="border-t border-[var(--ad-border)] p-4">
                 <MonitorPanel
                   data={data}
                   onOpenRelease={() => selectTab("release")}
-                  onOpenVisual={() => selectTab("visual")}
+                  onOpenVisual={() => selectTab("visual", "#route-qualification-workbench")}
                   permissions={guardedPermissions}
                   runCommittedMutation={runCommittedMutation}
                 />

@@ -7,7 +7,7 @@ import {
 import { creativeRunFillSkipSchema, creativeRunGroupIdsSchema, type CreativeRunFillSkip } from "@idream/shared/admin";
 import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import type { Prisma } from "@prisma/client";
-import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
+import { resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -71,6 +71,7 @@ import {
   resolveProductionTarget,
   resolveProductionVisualProfile,
 } from "./run-create-authority";
+import { creativeRunCostQuote } from "./run-pricing";
 
 // SPEC: 建一次 Creative Run —— 校验并 pin 生成路线、原子写入 Run + items + Generation
 // Request/Attempt + dispatch Outbox + 幂等命令 + 审计，然后投递 dispatch。
@@ -116,9 +117,16 @@ async function readCreativeRunReceipt(db: Prisma.TransactionClient, key: Creativ
       if (ids[0] !== result.batchId || (groupSize && ids.length !== groupSize)) {
         throw Errors.conflict("The Creative Run receipt contains inconsistent Run IDs");
       }
-      const batches = await Promise.all(ids.map((id) => db.contentProductionBatch.findUniqueOrThrow({
-        where: { id }, select: { id: true, items: { select: { id: true } } },
-      })));
+      // INVARIANT: db 可能是事务 adapter（单个 pg client），一次查询取回整组，不在其上并发多条查询。
+      const found = await db.contentProductionBatch.findMany({
+        where: { id: { in: ids } }, select: { id: true, items: { select: { id: true } } },
+      });
+      const byId = new Map(found.map((batch) => [batch.id, batch]));
+      const batches = ids.map((id) => {
+        const batch = byId.get(id);
+        if (!batch) throw Errors.conflict("The Creative Run receipt references a missing Run", { runId: id });
+        return batch;
+      });
       return { batches };
     }
   }
@@ -167,23 +175,6 @@ async function skipMissingImageFill(
     },
   });
   return { skip: decision.skip };
-}
-
-/** Creative Run 创建表单的成本预估：与创建走同一套 profile 准入判断。 */
-export async function estimateCreativeRunCost(input: {
-  readonly profileId: string;
-  readonly count: number;
-}) {
-  const profile = await resolveProductionProfile(input.profileId);
-  const perItemCostDreamcoins = await generationCostDreamcoins(
-    "image",
-    1,
-    profile.costMultiplier ?? 1,
-  );
-  return {
-    perItemCostDreamcoins,
-    totalCostDreamcoins: perItemCostDreamcoins * input.count,
-  };
 }
 
 function productionCandidateSeed(input: {
@@ -748,11 +739,7 @@ export async function createCreativeRun(
         }
       : {}),
   };
-  const perItemCostDreamcoins = await generationCostDreamcoins(
-    productionMode,
-    1,
-    profile.costMultiplier ?? 1,
-  );
+  const pricingAuthority = await resolveGenerationPricingAuthority(productionMode);
   const workItems = body.directions
     ? body.directions.flatMap((direction) => Array.from(
         { length: body.outputsPerDirection ?? 1 },
@@ -763,6 +750,13 @@ export async function createCreativeRun(
         (_, variantIndex) => ({ direction: null, variantIndex }),
       );
   const totalOutputCount = workItems.length;
+  // Each Run of this command is billed by the same rule the pre-submit estimate shows.
+  const runCostQuote = creativeRunCostQuote({
+    authority: pricingAuthority,
+    profileCostMultiplier: profile.costMultiplier,
+    itemCount: totalOutputCount,
+  });
+  const perItemCostDreamcoins = runCostQuote.perItemCostDreamcoins;
 
   let replayed = false;
   const result = await auditedTransaction<CreativeRunReceipt>("content.production.batch.create", async (tx) => {
@@ -1204,7 +1198,7 @@ export async function createCreativeRun(
         brief: body.brief ?? null,
         count: totalOutputCount,
         totalItems: totalOutputCount,
-        estimatedCostDreamcoins: perItemCostDreamcoins * totalOutputCount,
+        estimatedCostDreamcoins: runCostQuote.totalCostDreamcoins,
         status: "queued",
         ownerId: actor.id,
         dueAt: parseOptionalDate(body.dueAt),

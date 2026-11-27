@@ -171,6 +171,23 @@ function SoulEditor({
       ? t("Saved changes are not live yet. Customers still see the published version.")
       : null;
 
+  const appearanceFields = (
+    <fieldset className="mt-4 grid gap-5 lg:grid-cols-2" disabled={lockedIdentity !== null}>
+      <Area name="identityAnchor" error={fieldErrors.identityAnchor} label={t("Identity anchor")} value={visual.identityAnchor} onChange={(value) => setVisual({ identityAnchor: value })} />
+      <Area name="stableTraits" error={fieldErrors.stableTraits} label={t("Stable traits (one per line)")} value={visual.stableTraits} onChange={(value) => setVisual({ stableTraits: value })} />
+      <label className="text-sm font-medium">
+        {t("Visual style")}
+        <select className={`${fieldClass} mt-2`} onChange={(event) => setVisual({ style: event.target.value as SoulVisualForm["style"] })} value={visual.style}>
+          <option value="realistic">{t("Realistic")}</option>
+          <option value="anime">{t("Anime")}</option>
+          <option value="hybrid">{t("Hybrid")}</option>
+          <option value="other">{t("Other")}</option>
+        </select>
+      </label>
+      <Area name="referenceDirection" error={fieldErrors.referenceDirection} label={t("Reference direction")} value={visual.referenceDirection} onChange={(value) => setVisual({ referenceDirection: value })} />
+    </fieldset>
+  );
+
   return (
     <div className="space-y-5">
       {candidatePending ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
@@ -242,35 +259,35 @@ function SoulEditor({
           </div>
         </div>
 
-        <h3 className="mt-8 text-lg font-semibold">{t("Appearance")}</h3>
         {lockedIdentity ? (
           // INTENT (2026-10-07): once a look is locked, the portrait is the authority. The
           // server refuses edits here (visual_identity_locked); a new look is a new identity.
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-blue-bg)] px-4 py-2 text-sm text-[var(--ad-blue-text)]" role="status">
-            <span>
-              {t(identityAuthoredByOperator(lockedIdentity.createdFrom)
-                ? "The look is locked to the current portrait. Image generation uses the description written when the look was changed; the text below is from creation and is no longer used."
-                : "The look is locked to the current portrait. The text below describes it in image generation and can no longer be edited.")}
-            </span>
-            <Link className="min-h-9 content-center font-semibold underline" href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=visual`}>{t("Change the look")}</Link>
-          </div>
+          // The creation text stays readable but folded, so it no longer competes with the
+          // persona for attention; the look itself is managed in Appearance & identity.
+          <details className="mt-8 rounded-md border border-[var(--ad-border)]" data-testid="creation-appearance">
+            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">
+              {t("Appearance written at creation")}
+              <span className="ml-2 font-normal text-[var(--ad-text-muted)]">{t("Read-only")}</span>
+            </summary>
+            <div className="border-t border-[var(--ad-border)] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-[var(--ad-text-muted)]" role="status">
+                <span>
+                  {t(identityAuthoredByOperator(lockedIdentity.createdFrom)
+                    ? "The look is locked to the current portrait. Image generation uses the description written when the look was changed, not this text."
+                    : "The look is locked to the current portrait. Image generation still reads this text, but it can no longer be edited.")}
+                </span>
+                <Link className="min-h-9 content-center font-semibold text-[var(--ad-ink)] underline" href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=visual`}>{t("Open Appearance & identity")}</Link>
+              </div>
+              {appearanceFields}
+            </div>
+          </details>
         ) : (
-          <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("New images follow this description until the first portrait locks the look.")}</p>
+          <>
+            <h3 className="mt-8 text-lg font-semibold">{t("Appearance")}</h3>
+            <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("New images follow this description until the first portrait locks the look.")}</p>
+            {appearanceFields}
+          </>
         )}
-        <fieldset className="mt-4 grid gap-5 lg:grid-cols-2" disabled={lockedIdentity !== null}>
-          <Area name="identityAnchor" error={fieldErrors.identityAnchor} label={t("Identity anchor")} value={visual.identityAnchor} onChange={(value) => setVisual({ identityAnchor: value })} />
-          <Area name="stableTraits" error={fieldErrors.stableTraits} label={t("Stable traits (one per line)")} value={visual.stableTraits} onChange={(value) => setVisual({ stableTraits: value })} />
-          <label className="text-sm font-medium">
-            {t("Visual style")}
-            <select className={`${fieldClass} mt-2`} onChange={(event) => setVisual({ style: event.target.value as SoulVisualForm["style"] })} value={visual.style}>
-              <option value="realistic">{t("Realistic")}</option>
-              <option value="anime">{t("Anime")}</option>
-              <option value="hybrid">{t("Hybrid")}</option>
-              <option value="other">{t("Other")}</option>
-            </select>
-          </label>
-          <Area name="referenceDirection" error={fieldErrors.referenceDirection} label={t("Reference direction")} value={visual.referenceDirection} onChange={(value) => setVisual({ referenceDirection: value })} />
-        </fieldset>
 
         {Object.keys(fieldErrors).length > 0 ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{t("Fix the highlighted fields to save.")}</p> : null}
         {error ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}

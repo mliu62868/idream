@@ -116,6 +116,8 @@ export async function writeCharacterProject(
     readonly requestId: string;
     readonly requestHash: string;
     readonly project: PreparedCharacterProject;
+    /** Labels of the tags attached in this same transaction. */
+    readonly tags?: readonly string[];
   },
 ) {
   const { requestHash } = input;
@@ -194,6 +196,7 @@ export async function writeCharacterProject(
         ...response,
         requestHash,
         reason: input.request.reason,
+        ...(input.tags?.length ? { tags: input.tags } : {}),
       }),
       requestId: input.requestId,
     },
@@ -217,15 +220,43 @@ export async function writeCharacterProject(
   });
 }
 
+// SPEC: 标签集合与顺序无关：去重排序后才进入 requestHash 与持久化请求。
+// INVARIANT: 空集合等同于没带标签——字段被删掉，旧请求（以及只带 [] 的请求）的 requestHash 不变。
+function normalizedCreateRequest(request: CharacterProjectCreateRequest): CharacterProjectCreateRequest {
+  const { tagIds, ...rest } = request;
+  const unique = [...new Set(tagIds ?? [])].sort();
+  return unique.length > 0 ? { ...rest, tagIds: unique } : rest;
+}
+
+// SPEC: 创建时挂载标签，与 PUT /content/characters/:id/tags 同一规则：上限由契约限定，
+//       每个标签必须已存在。权限 content.tag.write 由路由在进入这里之前校验。
+// INVARIANT: 校验与写入都在创建角色的同一事务里——标签写不进去，角色也不存在。
+async function creationTagLabels(
+  tx: Prisma.TransactionClient,
+  tagIds: readonly string[],
+): Promise<string[]> {
+  if (tagIds.length === 0) return [];
+  const known = await tx.tag.findMany({
+    where: { id: { in: [...tagIds] } },
+    select: { id: true, label: true },
+  });
+  if (known.length !== tagIds.length) {
+    const missing = tagIds.filter((tagId) => !known.some((tag) => tag.id === tagId));
+    throw Errors.badRequest("Unknown tag", { missing });
+  }
+  return known.map((tag) => tag.label).sort();
+}
+
 export async function createCharacterProject(input: {
   actor: AdminActor;
   request: CharacterProjectCreateRequest;
   idempotencyKey: string;
   requestId: string;
 }): Promise<CharacterProjectCreateResponse> {
+  const request = normalizedCreateRequest(input.request);
   const requestHash = canonicalSha256({
     commandType: CREATE_COMMAND,
-    payload: input.request,
+    payload: request,
     // INVARIANT: 历史 requestHash 含这个成员（恒为空数组）；去掉会让旧幂等键的重放变成冲突。
     legacyTagLabels: [],
   });
@@ -236,7 +267,7 @@ export async function createCharacterProject(input: {
   });
   if (prior) return prior;
 
-  const project = await prepareCharacterProject(input.request);
+  const project = await prepareCharacterProject(request);
   const { projectId, response } = project;
   const commandId = randomUUID();
 
@@ -267,20 +298,28 @@ export async function createCharacterProject(input: {
           actorId: input.actor.id,
           requestId: input.requestId,
           requestHash,
-          requestPayload: toInputJson(input.request),
+          requestPayload: toInputJson(request),
           retryMode: "idempotent",
           status: "succeeded",
           result: toInputJson(response),
           finishedAt: new Date(),
         },
       });
+      const tagIds = request.tagIds ?? [];
+      const tags = await creationTagLabels(tx, tagIds);
       await writeCharacterProject(tx, {
         actor: input.actor,
-        request: input.request,
+        request,
         requestId: input.requestId,
         requestHash,
         project,
+        tags,
       });
+      if (tagIds.length > 0) {
+        await tx.characterTag.createMany({
+          data: tagIds.map((tagId) => ({ characterId: project.characterId, tagId })),
+        });
+      }
       return response;
     });
   } catch (error) {

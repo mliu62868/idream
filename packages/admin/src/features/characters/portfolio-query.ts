@@ -1,6 +1,8 @@
 import {
+  characterLifecycleSchema,
   characterPortfolioWorkQueueSchema,
   characterServingStateSchema,
+  type CharacterLifecycle,
   type CharacterPortfolioQuery,
 } from "@idream/shared/admin";
 
@@ -21,7 +23,8 @@ export type CharacterPortfolioEmptyView =
 
 export interface CharacterPortfolioUrlState {
   readonly search: string;
-  readonly servingState?: string;
+  // SPEC: 列表视图按生命周期筛：草稿 / 线上 / 暂停 / 归档草稿 / 已退役。
+  readonly lifecycle?: CharacterLifecycle;
   readonly attention?: boolean;
   readonly workQueue?: CharacterPortfolioWorkQueue;
   readonly source?: CharacterPortfolioSource;
@@ -72,12 +75,27 @@ function parseSource(value: string | null): CharacterPortfolioSource | undefined
   return value === "official" || value === "user" ? value : undefined;
 }
 
+// INTENT: 旧书签只有 ?servingState=。retired 曾是「Archived」视图（当时与已退役混在一起），
+//         按它当年的意图映射为归档草稿；其余状态一一对应到生命周期。
+const LIFECYCLE_BY_LEGACY_SERVING_STATE: Record<(typeof CHARACTER_PORTFOLIO_SERVING_STATES)[number], CharacterLifecycle> = {
+  inactive: "draft",
+  live: "live",
+  paused: "paused",
+  retired: "archived",
+};
+
+function parseLifecycle(params: URLSearchParams): CharacterLifecycle | undefined {
+  const lifecycle = characterLifecycleSchema.safeParse(params.get("lifecycle"));
+  if (lifecycle.success) return lifecycle.data;
+  const servingState = characterServingStateSchema.safeParse(params.get("servingState"));
+  return servingState.success ? LIFECYCLE_BY_LEGACY_SERVING_STATE[servingState.data] : undefined;
+}
+
 export function parseCharacterPortfolioUrl(search: string): CharacterPortfolioUrlState {
   const params = new URLSearchParams(search);
-  const servingState = characterServingStateSchema.safeParse(params.get("servingState"));
   return {
     search: params.get("search")?.trim() ?? "",
-    servingState: servingState.success ? servingState.data : undefined,
+    lifecycle: parseLifecycle(params),
     attention: params.get("attention") === "true" ? true : undefined,
     workQueue: parseWorkQueue(params.get("workQueue")),
     source: parseSource(params.get("source")),
@@ -108,7 +126,7 @@ export function characterPortfolioQuery(
     params.set("sort", state.sort);
   }
   if (state.search.trim()) params.set("search", state.search.trim());
-  if (state.servingState) params.set("servingState", state.servingState);
+  if (state.lifecycle) params.set("lifecycle", state.lifecycle);
   if (state.attention) params.set("attention", "true");
   if (state.workQueue) params.set("workQueue", state.workQueue);
   if (state.source) params.set("source", state.source);
@@ -122,16 +140,16 @@ export function characterPortfolioQuery(
 export function characterPortfolioEmptyView(
   state: CharacterPortfolioUrlState,
 ): CharacterPortfolioEmptyView {
-  if (state.search.trim() || state.servingState || state.source) return "filtered";
+  if (state.search.trim() || state.lifecycle || state.source) return "filtered";
   if (state.attention) return "attention";
   if (state.workQueue) return state.workQueue;
   return "all";
 }
 
-// SPEC: 地址栏之外、只属于请求的默认值。「全部」不含归档，归档有自己的视图；计数随列表一起取。
+// SPEC: 地址栏之外、只属于请求的默认值。「全部」不含归档草稿与已退役，它们各有视图；计数随列表一起取。
 export function characterPortfolioRequestParams(state: CharacterPortfolioUrlState) {
   const params = new URLSearchParams(characterPortfolioQuery(state, true));
-  if (state.servingState !== "retired") params.set("excludeArchived", "true");
+  if (state.lifecycle !== "archived" && state.lifecycle !== "retired") params.set("excludeArchived", "true");
   params.set("includeFacets", "true");
   return params;
 }

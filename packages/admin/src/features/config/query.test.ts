@@ -33,4 +33,13 @@ describe("generation config query", () => {
       tab: "settings",
     })).toBe("/admin/ops/profiles?view=config&tab=settings");
   });
+
+  // SPEC: 全平台默认声音的深链（角色声音页、发布页都链过来）必须落到 Voice defaults 页签。
+  it("round-trips the voice defaults tab", () => {
+    expect(generationConfigQueryFromSearch("?tab=voice").tab).toBe("voice");
+    expect(generationConfigWorkspaceUrl("/admin/ops/profiles", "", { ...defaultGenerationConfigQuery, tab: "voice" }))
+      .toBe("/admin/ops/profiles?tab=voice");
+    expect(generationConfigWorkspaceUrl("/admin/ops/profiles", "?tab=voice", defaultGenerationConfigQuery))
+      .toBe("/admin/ops/profiles");
+  });
 });

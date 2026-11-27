@@ -526,8 +526,8 @@ export const adminZhCommon: Record<string, string> = {
     "没有写入任何数据。展开技术详情看权威的原文，那句话里写着是哪个前置条件。",
   "Someone changed this record before your action landed.": "在你的操作生效前，已经有人改过这条记录。",
   "The look is locked to the current portrait.": "长相已锁定为当前肖像。",
-  "Change the look from Visual identity instead of editing the appearance text. Nothing was written.":
-    "请在「视觉身份」中换长相，而不是修改外观文字。本次没有写入任何内容。",
+  "Change the look in Appearance & identity instead of editing the appearance text. Nothing was written.":
+    "请在「外观与身份」中更换形象，而不是修改外观文字。本次没有写入任何内容。",
   "A candidate release is waiting, so this character's draft is locked.": "有一个待发布版本正在等待，角色草稿已锁定。",
   "Open Release, publish or discard the candidate, then repeat this change. Nothing was written.":
     "打开「发布版本」，发布或放弃这个待发布版本后再重做这次修改。本次没有写入任何内容。",

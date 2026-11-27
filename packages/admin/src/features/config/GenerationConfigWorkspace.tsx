@@ -1,6 +1,7 @@
 "use client";
 
 import { GenerationProfileEditor } from "./GenerationProfileEditor";
+import { PlatformVoiceDefaultsCard, type PlatformVoiceDefaultsPermissions } from "./PlatformVoiceDefaultsCard";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -31,7 +32,8 @@ import {
 type RecordRow = Record<string, unknown>;
 type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo; authoringEnabled?: boolean; selectedProfile?: RecordRow | null };
 type AuthorityState<T> = { queryKey: string | null; data: T | null; error: string | null; cause: unknown; loading: boolean; refreshedAt: string | null };
-type Permissions = { manageProfiles: boolean; manageFlags: boolean };
+type Permissions = { manageProfiles: boolean; manageFlags: boolean; voiceDefaults?: PlatformVoiceDefaultsPermissions };
+const NO_VOICE_DEFAULTS_ACCESS: PlatformVoiceDefaultsPermissions = { read: false, write: false, preview: false };
 type ReviewDraft = { sampleCount: string; passCount: string; reviewUrl: string };
 // SPEC: 一次测试出一张。同一个值既发给后端，也印在确认框的成本说明里。
 const TEST_IMAGE_OUTPUT_COUNT = 1;
@@ -160,6 +162,8 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   }, []);
 
   const load = useCallback((next: GenerationConfigQuery) => {
+    // The voice tab reads its own authority; it has no list query to load here.
+    if (next.tab === "voice") return;
     if (next.tab === "settings") void loadFlags(next);
     else void loadProfiles(next);
   }, [loadFlags, loadProfiles]);
@@ -318,19 +322,21 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   }
 
   const filtered = isGenerationConfigQueryFiltered(query);
-  const initiallyLoading = query.tab === "profiles" ? !profiles.data && profiles.loading : !flags.data && flags.loading;
+  const initiallyLoading = query.tab === "voice" ? false : query.tab === "profiles" ? !profiles.data && profiles.loading : !flags.data && flags.loading;
   return (
     <section aria-labelledby="generation-config-title" className="space-y-5">
-      <div id="generation-config-title"><PageHeader purpose={t("Test generation profiles, publish proven versions, and roll feature flags through audited control-plane commands.")} title={t("Profiles & Rollout")} /></div>
+      <div id="generation-config-title"><PageHeader purpose={t("Test generation profiles, publish proven versions, roll feature flags, and set the system voice defaults through audited control-plane commands.")} title={t("Profiles & Rollout")} /></div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--ad-text-muted)]" role="status">
-        {query.tab === "profiles" ? <><Freshness label="Profiles" state={profiles} /><Freshness label="Recent jobs" state={recentJobs} /></> : <Freshness label="Feature flags" state={flags} />}
+        {query.tab === "voice" ? null : query.tab === "profiles" ? <><Freshness label="Profiles" state={profiles} /><Freshness label="Recent jobs" state={recentJobs} /></> : <Freshness label="Feature flags" state={flags} />}
       </div>
 
-      <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/5 md:grid-cols-2">
+      <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/5 md:grid-cols-3">
         <Tab active={query.tab === "profiles"} count={profiles.data ? profileRows.length : null} label="Profiles" meta="Test and publish" onClick={() => navigate({ ...query, tab: "profiles" })} />
         <Tab active={query.tab === "settings"} count={flags.data ? flagRows.length : null} label="Settings" meta="Feature flags" onClick={() => navigate({ ...query, tab: "settings" })} />
+        <Tab active={query.tab === "voice"} count={null} label="Voice defaults" meta="Inherited by every character" onClick={() => navigate({ ...query, tab: "voice" })} />
       </div>
 
+      {query.tab === "voice" ? <PlatformVoiceDefaultsCard permissions={permissions.voiceDefaults ?? NO_VOICE_DEFAULTS_ACCESS} /> : <>
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-4" onSubmit={apply}>
         <Field label="Search" onChange={(search) => setDraft((current) => ({ ...current, search }))} search value={draft.search} />
         {query.tab === "profiles" ? <><Select label="Profile mode" onChange={(profileMode) => setDraft((current) => ({ ...current, profileMode }))} options={["", "image", "video"]} value={draft.profileMode} />
@@ -363,6 +369,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
           {flags.data ? <ListPagination cursor={query.flagCursor} loading={flags.loading} onNavigate={(flagCursor, trail) => navigate({ ...query, flagCursor }, "push", { ...trails, flags: trail })} pageInfo={flags.data.pageInfo ?? emptyPageInfo} rowCount={flagRows.length} trail={trails.flags} /> : null}
         </>
       )}
+      </>}
       {confirmation?.scopeKey === scopeKey ? <ConfirmDialog onClose={() => setConfirmation(current => current === confirmation ? null : current)} spec={confirmation} /> : null}
     </section>
   );

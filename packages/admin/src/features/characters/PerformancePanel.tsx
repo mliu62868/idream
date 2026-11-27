@@ -165,9 +165,14 @@ export function PerformancePanel({ data }: { data: CharacterWorkspaceDetail }) {
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
+          {/* SPEC: 与「发布健康」并列在同一 tab；标题写明这是经营层面的表现与建议（promote / pause / retire），
+              不是 Release 的技术处置。 */}
           <h3 className="font-semibold" id="character-performance-title">
-            {t("Performance")}
+            {t("Business performance and recommendation")}
           </h3>
+          <p className="mt-0.5 text-xs text-[var(--ad-text-muted)]">
+            {t("How customers respond compared with similar characters. Its suggestions concern exposure and lifecycle.")}
+          </p>
           {primaryQualityProblem ? (
             <p className="mt-1 text-sm text-[var(--ad-red-text)]">
               {t(primaryQualityProblem.qualityState)}

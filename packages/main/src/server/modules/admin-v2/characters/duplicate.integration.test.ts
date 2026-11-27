@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { CHARACTER_DEFAULT_REFERENCE_DIRECTION } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 import { createUser } from "@/server/test/helpers";
@@ -122,6 +123,71 @@ describe("Character duplicate", () => {
     const granted = await duplicate(sourceId, { userId: scopedId, role: "analyst" });
     expect(granted.status).toBe(201);
     await prisma.adminUserPermission.deleteMany({ where: { userId: scopedId } });
+  });
+
+  // Older official Characters predate the wizard's required visual fields.
+  async function legacyCharacter(label: string, appearanceSnapshot: Record<string, unknown>) {
+    const created = await createCharacterProject({
+      actor: { id: adminId, role: "admin" },
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+      request: {
+        persona: {
+          name: `${label} ${suffix.slice(0, 8)}`, age: 34, gender: "male",
+          characterPromise: "A retired lighthouse keeper with a long memory", detailsMarkdown: "", firstMessage: "Storm's coming.",
+        },
+        visualDirection: {
+          identityAnchor: "Weathered lighthouse keeper", stableTraits: ["Grey beard"], style: "realistic", referenceDirection: "Overcast light",
+        },
+        reason: { code: "test", summary: "Seed a legacy Character" },
+        confirmation: "CREATE CHARACTER",
+      },
+    });
+    const first = await prisma.characterContentVersion.findFirstOrThrow({ where: { characterId: created.characterId } });
+    await prisma.characterContentVersion.create({ data: {
+      characterId: created.characterId, version: 2, contentHash: `legacy-${randomUUID()}`,
+      personaSnapshot: first.personaSnapshot as never, openingSnapshot: first.openingSnapshot as never,
+      appearanceSnapshot: appearanceSnapshot as never, sourceType: "test",
+    } });
+    return created.characterId;
+  }
+
+  it("fills a legacy Character's look from its first fixed feature, never from its description", async () => {
+    const legacyId = await legacyCharacter("Keeper", { style: "realistic", stableTraits: ["Grey beard", "Wool cap"] });
+    const result = await duplicate(legacyId);
+    expect(result.status).toBe(201);
+    const { characterId } = result.data as { characterId: string };
+    const content = await prisma.characterContentVersion.findFirstOrThrow({ where: { characterId }, orderBy: { version: "desc" } });
+    expect(content.appearanceSnapshot).toMatchObject({
+      identityAnchor: "Grey beard",
+      stableTraits: ["Grey beard", "Wool cap"],
+      referenceDirection: CHARACTER_DEFAULT_REFERENCE_DIRECTION,
+    });
+    expect(JSON.stringify(content.appearanceSnapshot)).not.toContain("lighthouse keeper with a long memory");
+  });
+
+  it("uses a legacy Character's one-line look as its fixed feature when it has no features", async () => {
+    const legacyId = await legacyCharacter("Anchor keeper", { style: "realistic", identityAnchor: "Weathered keeper in a wool coat" });
+    const result = await duplicate(legacyId);
+    expect(result.status).toBe(201);
+    const { characterId } = result.data as { characterId: string };
+    const content = await prisma.characterContentVersion.findFirstOrThrow({ where: { characterId }, orderBy: { version: "desc" } });
+    expect(content.appearanceSnapshot).toMatchObject({
+      identityAnchor: "Weathered keeper in a wool coat",
+      stableTraits: ["Weathered keeper in a wool coat"],
+    });
+    expect(JSON.stringify(content.appearanceSnapshot)).not.toContain("lighthouse keeper with a long memory");
+  });
+
+  it("refuses to copy a legacy Character without any appearance and says what to add", async () => {
+    const legacyId = await legacyCharacter("Bare keeper", { style: "realistic" });
+    const before = await prisma.character.count({ where: { name: { contains: "Bare keeper" } } });
+    const result = await duplicate(legacyId);
+    expect(result.status).toBe(409);
+    expect(result.error).toMatchObject({ details: {
+      reason: "visual_traits_missing", deepLink: `/admin/characters/${legacyId}?tab=soul`,
+    } });
+    await expect(prisma.character.count({ where: { name: { contains: "Bare keeper" } } })).resolves.toBe(before);
   });
 
   it("404s for an unknown Character", async () => {

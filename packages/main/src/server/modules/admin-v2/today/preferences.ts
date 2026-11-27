@@ -3,20 +3,46 @@ import {
   type AdminPermissionKey,
   type TodaySourceType,
 } from "@idream/shared/admin";
+import { effectiveCharacterIdsForPermission } from "@/server/admin/effective-permissions";
+import type { ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { assertIncidentReadable } from "@/server/modules/admin-v2/incidents/scope";
+import { assertCharacterInScope } from "@/server/modules/admin-v2/shared/authority";
+import { creativeRunCharacterId } from "@/server/modules/admin-v2/creative/run-scope";
+import { commandReadScopes } from "@/server/modules/admin-v2/commands/query";
 import { updateWorkPreference } from "../shared/work-preferences";
 
 type Actor = { id: string; role: string };
 
-function canReadCommand(targetType: string, permissions: ReadonlySet<AdminPermissionKey>) {
-  if (targetType === "character_release") return permissions.has("character.release.read");
-  if (targetType === "creative_run") return permissions.has("creative.run.read");
-  if (targetType === "ops_incident") return permissions.has("ops.incident.read");
-  if (targetType === "admin_case") return permissions.has("case.read");
-  return permissions.has("audit.read");
+/**
+ * SPEC: 持有 `permission` 且角色范围覆盖 `characterId`；范围外（或目标解析不到角色）是与
+ *       `assertCharacterInScope` 同形的 403。全局授予的人原样放行。
+ */
+async function assertCharacterScopedRead(
+  actor: Actor,
+  permissions: ReadonlySet<AdminPermissionKey>,
+  permission: AdminPermissionKey,
+  characterId: string | null,
+) {
+  if (!permissions.has(permission)) throw Errors.forbidden("Target is outside the actor's read scope", { permission });
+  const scope = await effectiveCharacterIdsForPermission(actor.id, actor.role as ActorRole, permission);
+  assertCharacterInScope(scope, permission, characterId);
+}
+
+/**
+ * SPEC: 角色级 creative.run.read 只够得着被分配角色下的 Run；范围外（含非角色目标、或 Run 不存在）
+ *       是与 `assertCharacterInScope` 同形的 403。全局授予的人原样放行，Run 不存在时返回 null。
+ */
+async function creativeRunInReadScope(actor: Actor, runId: string) {
+  const run = await prisma.contentProductionBatch.findUnique({
+    where: { id: runId },
+    select: { targetType: true, targetId: true },
+  });
+  const scope = await effectiveCharacterIdsForPermission(actor.id, actor.role as ActorRole, "creative.run.read");
+  assertCharacterInScope(scope, "creative.run.read", run ? creativeRunCharacterId(run) : null);
+  return run;
 }
 
 async function assertReadableSource(
@@ -64,24 +90,41 @@ async function assertReadableSource(
     return;
   }
   if (sourceType === "control_plane_command") {
-    const row = await prisma.controlPlaneCommand.findUnique({ where: { id: sourceId }, select: { targetType: true, actorId: true } });
+    const row = await prisma.controlPlaneCommand.findUnique({
+      where: { id: sourceId },
+      select: { id: true, targetType: true, targetId: true, actorId: true, requestPayload: true },
+    });
     if (!row) throw Errors.notFound("Command not found");
-    if (row.actorId !== actor.id || !canReadCommand(row.targetType, permissions)) {
-      throw Errors.forbidden("Command is outside the actor's read scope");
+    if (row.actorId !== actor.id) throw Errors.forbidden("Command is outside the actor's read scope");
+    // SPEC: 与 GET /commands/:id 同一份目标读权限与角色解析（commandReadScopes）：
+    //       角色类目标（Release / Serving / Run / Project / 会话）按目标所属角色核对范围。
+    const scope = (await commandReadScopes(prisma, [row])).get(row.id);
+    if (!scope) {
+      // 未声明读权限的目标类型：沿用全局审计读权限。
+      if (!permissions.has("audit.read")) throw Errors.forbidden("Command is outside the actor's read scope");
+      return;
     }
+    if (scope.characterId !== undefined) {
+      await assertCharacterScopedRead(actor, permissions, scope.permission, scope.characterId);
+      return;
+    }
+    if (!permissions.has(scope.permission)) throw Errors.forbidden("Command is outside the actor's read scope");
     return;
   }
   if (sourceType === "character_release") {
     if (!permissions.has("character.release.read")) throw Errors.forbidden("Character Release is outside the actor's read scope");
-    if (!await prisma.characterRelease.findUnique({ where: { id: sourceId }, select: { id: true } })) {
-      throw Errors.notFound("Character Release not found");
-    }
+    const release = await prisma.characterRelease.findUnique({ where: { id: sourceId }, select: { projectId: true } });
+    const project = release
+      ? await prisma.characterProject.findUnique({ where: { id: release.projectId }, select: { characterId: true } })
+      : null;
+    // INVARIANT: 角色级 character.release.read 只够得着被分配角色的 Release；范围检查先于存在性判断，
+    //            受限账号看不出范围外的 Release 是否存在。
+    await assertCharacterScopedRead(actor, permissions, "character.release.read", project?.characterId ?? null);
+    if (!release) throw Errors.notFound("Character Release not found");
     return;
   }
   if (!permissions.has("creative.run.read")) throw Errors.forbidden("Creative Run is outside the actor's read scope");
-  if (!await prisma.contentProductionBatch.findUnique({ where: { id: sourceId }, select: { id: true } })) {
-    throw Errors.notFound("Creative Run not found");
-  }
+  if (!await creativeRunInReadScope(actor, sourceId)) throw Errors.notFound("Creative Run not found");
 }
 
 export async function updateOperationalWorkPreference(input: {

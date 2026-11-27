@@ -376,15 +376,10 @@ describe("Character Portfolio authority/read model", () => {
     await prisma.adminUserGrantBundle.createMany({
       data: [
         {
+          // The producer bundle carries creative.run.read, so its Character scope is the
+          // draft image scope under test: B only.
           userId: scopedViewerId,
           bundleKey: "character_producer",
-          scope: { characterIds: [characterA, characterB] },
-          reason: "Portfolio cross-scope authorization fixture",
-          createdById: adminId,
-        },
-        {
-          userId: scopedViewerId,
-          bundleKey: "creative_operator",
           scope: { characterIds: [characterB] },
           reason: "Portfolio draft image scope fixture",
           createdById: adminId,
@@ -402,6 +397,18 @@ describe("Character Portfolio authority/read model", () => {
           createdById: adminId,
         },
       ],
+    });
+    // Character reads on both A and B come from global overrides, so the portfolio and
+    // workspace gates stay open on A while creative.run.read stays scoped to B.
+    await prisma.adminUserPermission.createMany({
+      data: (["character.project.read", "character.release.read", "character.performance.read"] as const)
+        .map((permissionKey) => ({
+          userId: scopedViewerId,
+          permissionKey,
+          effect: "grant",
+          reason: "Portfolio cross-scope authorization fixture",
+          createdById: adminId,
+        })),
     });
     await prisma.characterFunnelDaily.createMany({
       data: [
@@ -572,6 +579,7 @@ describe("Character Portfolio authority/read model", () => {
     await prisma.mediaAsset.deleteMany({
       where: { id: { in: mediaAssetIds } },
     });
+    await prisma.adminUserPermission.deleteMany({ where: { userId: scopedViewerId } });
     await prisma.adminUserGrantBundle.deleteMany({
       where: {
         userId: {
@@ -1374,7 +1382,7 @@ describe("Character Portfolio authority/read model", () => {
     });
   });
 
-  it("offers the same recovery action in both views and links only when its command is readable", async () => {
+  it("offers the same recovery action in both views and keeps it readable through the target permission alone", async () => {
     const command = await prisma.controlPlaneCommand.create({ data: {
       scope: `test:portfolio-recover:${suffix}`,
       idempotencyKey: suffix,
@@ -1411,15 +1419,18 @@ describe("Character Portfolio authority/read model", () => {
       // This portfolio-only fixture normally isolates its routes with a synthetic style.
       await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { style: "realistic" } });
       await readAction(true);
+      // Command status is authorized by its target alone. Character bundles carry no dashboard.read,
+      // and whoever can read this workspace (which needs character.release.read) can read its
+      // Release command, so the recovery link stays live without the dashboard permission.
       await prisma.adminUserPermission.create({ data: {
         userId: adminId, permissionKey: "dashboard.read", effect: "revoke",
-        reason: "Release access without command status access", createdById: adminId,
+        reason: "Release access without dashboard access", createdById: adminId,
       } });
-      await readAction(false);
+      await readAction(true);
       const commandResponse = await getControlPlaneCommand(new Request(
         "http://localhost/api/v2/admin/commands/" + command.id, { headers },
       ), command.id);
-      expect(commandResponse.status).toBe(403);
+      expect(commandResponse.status).toBe(200);
     } finally {
       await prisma.adminUserPermission.deleteMany({ where: { userId: adminId, permissionKey: "dashboard.read" } });
       await prisma.controlPlaneCommand.delete({ where: { id: command.id } });
@@ -1498,8 +1509,12 @@ describe("Character Portfolio authority/read model", () => {
         primaryImageSource: "draft",
         draftPurposes: ["character_cover"],
       });
-      // Draft thumbnail exposure and the image-source route's read gate are distinct.
-      expect(itemA.journey.primaryAction.canReadTarget).toBe(true);
+      // The action link follows the authority seam: creative.run.read is Character-scoped like
+      // every other permission, so A's image-library target is not readable while B's is.
+      expect(itemA.journey.primaryAction).toMatchObject({
+        readOperations: expect.arrayContaining(["GET /api/v2/admin/characters/:id/image-sources"]),
+        canReadTarget: false,
+      });
       expect(itemB.journey.primaryAction.canReadTarget).toBe(true);
     } finally {
       await prisma.characterProject.update({

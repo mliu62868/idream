@@ -5,7 +5,7 @@ import type {
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { estimateCreativeRunCost } from "../creative/run-create";
+import { estimateCreativeRunCost } from "../creative/run-pricing";
 import {
   adminTextRuntimeIdentity,
   assertAdminTextGenerationAvailable,

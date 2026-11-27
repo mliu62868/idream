@@ -1062,6 +1062,22 @@ describe("character command journal — 恢复回路", () => {
     });
   });
 
+  // SPEC: 失败终局的服务端错误证据留在快照里（发布页据此列出 blockers），下一次提交开始时清零。
+  it("keeps the terminal failure evidence until the next submission begins", async () => {
+    const { journal, server } = await acceptedCommand();
+    const error = { code: "release_validation_failed", blockers: ["opening_complete"], candidateWithdrawn: true };
+    server.resolveWith({ status: "failed", error });
+
+    await journal.recover(recoverInput(journal, { settle: async (input) => { input.onSettled(); } }));
+
+    expect(journal.getSnapshot()).toMatchObject({
+      writesLocked: false,
+      lastFailure: { commandId: "command-1", action: "Release publish", status: "failed", error },
+    });
+    expect(journal.beginSubmission("next write")).toBe(true);
+    expect(journal.getSnapshot().lastFailure).toBeNull();
+  });
+
   it("unlocks after 404 command evidence once authority proves nothing is active", async () => {
     const { journal, server } = await acceptedCommand();
     server.rejectWith(

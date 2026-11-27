@@ -70,9 +70,23 @@ export function requiresReviewedIdentityBootstrap(input: {
   );
 }
 
+// SPEC: 这些锚点都在「诊断与高级设置」折叠区里；深链或 hash 指向它们时必须先展开折叠区，
+// 工作台的聚焦逻辑（CharacterWorkspace 的 locationHash effect）才能滚到并聚焦目标。
+const DIAGNOSTICS_HASH_TARGETS = new Set([
+  "visual-production-readiness",
+  "visual-identity-version",
+  "visual-reference-set",
+  "route-qualification-workbench",
+]);
+
+function diagnosticsHashTarget(hash: string | undefined) {
+  return DIAGNOSTICS_HASH_TARGETS.has((hash ?? "").replace(/^#/, ""));
+}
+
 export function VisualIdentityPanel({
   actorId = "current-operator",
   data,
+  locationHash,
   navigateToTab,
   permissions,
   runCommittedMutation,
@@ -88,6 +102,7 @@ export function VisualIdentityPanel({
     >;
   runCommittedMutation: RunCommittedCharacterMutation;
   navigateToTab?: (tab: CharacterWorkspaceTab) => void;
+  locationHash?: string;
 }) {
   const { t } = useAdminI18n();
   const identity = data.visual.activeIdentity;
@@ -116,16 +131,26 @@ export function VisualIdentityPanel({
     routeEvaluation.profiles.find((profile) => profile.recommended) ??
     routeEvaluation.profiles[0] ??
     null;
-  const [productionSettingsOpen, setProductionSettingsOpen] = useState(
-    !data.visual.readiness.ready,
+  // INTENT: 技术诊断默认折叠 —— 未就绪时只在折叠区上方给一行状态和展开入口，
+  // 不再把整块技术信息推上首屏；深链 / hash 指向折叠区内的锚点时自动展开。
+  const [productionSettingsOpen, setProductionSettingsOpen] = useState(() =>
+    diagnosticsHashTarget(locationHash),
   );
+  const [seenLocationHash, setSeenLocationHash] = useState(locationHash);
   // INTENT: 「身份是否受阻」由服务端 imageReadiness.steps 判定；前端曾用一张 code→锚点表反推，
   // 那张表漏了 visual_identity_missing 与 visual_anchor_missing，这两类阻塞时面板不会自动展开。
   const identityVersionNeedsAttention =
     (data.visual.imageReadiness?.steps.identity ?? "complete") !== "complete";
   const [advancedIdentityOpen, setAdvancedIdentityOpen] = useState(
-    identityVersionNeedsAttention,
+    () => identityVersionNeedsAttention || locationHash === "#visual-identity-version",
   );
+  // SPEC: 同一面板内 hash 变化（站内深链）也要展开对应折叠区；在渲染期按「上一次看到的 hash」对齐，
+  // 不用 effect，避免先渲染折叠态、聚焦逻辑找不到可见目标。
+  if (locationHash !== seenLocationHash) {
+    setSeenLocationHash(locationHash);
+    if (diagnosticsHashTarget(locationHash)) setProductionSettingsOpen(true);
+    if (locationHash === "#visual-identity-version") setAdvancedIdentityOpen(true);
+  }
   const referenceCandidates = useMemo(
     () =>
       uniqueAvailableVisualAssets([
@@ -406,35 +431,82 @@ export function VisualIdentityPanel({
         <span>{t(identityStale || referencesStale ? "Draft is based on an older version. Copy or discard it." : "Unsaved draft · kept in this tab")}</span>
         <button className="min-h-9 underline" disabled={busy !== null} onClick={() => setDiscardOpen(true)} type="button">{t("Discard draft")}</button>
       </div> : null}
-      <details
-        className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
-        data-testid="change-look"
-      >
-        <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
-          {t("Change look")}
-        </summary>
-        <div className="border-t border-[var(--ad-border)] p-4 sm:p-5">
-          <VisualIdentityExperimentWorkbench
-            actorId={actorId}
-            canActivate={permissions.writeVisual}
-            canCreate={permissions.createAssets ?? false}
-            canUploadSource={
-              (permissions.writeProject ?? false) &&
-              (permissions.createAssets ?? false)
-            }
-            data={data}
-            onActivateCandidate={activateIdentityCandidate}
-            selectedImageCount={draftSelectedImageCount(data)}
-          />
+      {identity ? (
+        <details
+          className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
+          data-testid="change-look"
+        >
+          <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
+            {t("Change appearance (new identity)")}
+          </summary>
+          <div className="border-t border-[var(--ad-border)] p-4 sm:p-5">
+            <VisualIdentityExperimentWorkbench
+              actorId={actorId}
+              canActivate={permissions.writeVisual}
+              canCreate={permissions.createAssets ?? false}
+              canUploadSource={
+                (permissions.writeProject ?? false) &&
+                (permissions.createAssets ?? false)
+              }
+              data={data}
+              onActivateCandidate={activateIdentityCandidate}
+              selectedImageCount={draftSelectedImageCount(data)}
+            />
+          </div>
+        </details>
+      ) : (
+        // SPEC: 首次建立身份只有一个界面入口 —— Images 里生成并审核第一张肖像
+        // （production-journey.ts：「建立身份的唯一动作就是在 Assets 生成并审核第一张肖像」）。
+        // 后端写入路径不变，这里只是不再并列第二个入口。
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-4 text-sm sm:px-5"
+          data-testid="first-identity-entry"
+          role="status"
+        >
+          <span>
+            {t("This character has no identity yet. Create and choose the first portrait in Images; it becomes the identity.")}
+          </span>
+          {navigateToTab ? (
+            <WorkspaceButton onClick={() => navigateToTab("assets")} tone="primary">
+              {t("Create first identity portrait")}
+            </WorkspaceButton>
+          ) : (
+            <Link
+              className="min-h-9 content-center font-semibold underline"
+              href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=assets`}
+            >
+              {t("Create first identity portrait")}
+            </Link>
+          )}
         </div>
-      </details>
+      )}
+      {!data.visual.readiness.ready && !productionSettingsOpen ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]"
+          data-testid="visual-readiness-summary"
+          role="status"
+        >
+          <span>
+            {readinessActions[0]
+              ? t("Not ready for image production · Next: {action}", { action: t(readinessActions[0].action) })
+              : t("Not ready for image production.")}
+          </span>
+          <button
+            className="min-h-9 font-semibold underline"
+            onClick={() => setProductionSettingsOpen(true)}
+            type="button"
+          >
+            {t("Show details and fix")}
+          </button>
+        </div>
+      ) : null}
       <details
         className="scroll-mt-4 rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
         id="visual-production-readiness"
         onToggle={(event) =>
           setProductionSettingsOpen(event.currentTarget.open)
         }
-        open={productionSettingsOpen || !data.visual.readiness.ready}
+        open={productionSettingsOpen}
       >
         <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
           {t("Diagnostics and advanced settings")}
@@ -734,7 +806,7 @@ export function VisualIdentityPanel({
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h3 className="font-semibold" id="character-looks-title">
-                    {t("Character Looks using role images")}
+                    {t("Customer saved looks using role images")}
                   </h3>
                   <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
                     {t(

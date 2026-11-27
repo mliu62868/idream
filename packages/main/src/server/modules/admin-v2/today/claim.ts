@@ -8,11 +8,17 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
+import {
+  actorCharacterScope,
+  actorWithPermission,
+  assertCharacterInScope,
+  jsonBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { assignReviewCaseInTransaction } from "../cases/service";
 import { triageIncidentInTransaction } from "../incidents/workflow";
 import { canonicalRequestHash } from "../shared/control-plane-command";
+import { creativeRunCharacterId } from "../creative/run-scope";
 import { toInputJson } from "../shared/prisma-json";
 
 async function claimCreativeRun(input: {
@@ -23,6 +29,13 @@ async function claimCreativeRun(input: {
 }): Promise<TodayClaimResponse> {
   const tx = input.tx;
   const current = await tx.contentProductionBatch.findUnique({ where: { id: input.request.sourceId } });
+  // SPEC: 角色级 creative.run.write 只能认领被分配角色下的 Run。核对在事务里读到的那一行，
+  //       非角色目标或不存在的 Run 对范围受限的人同样是 403（不暴露是否存在）；全局授予不受影响。
+  assertCharacterInScope(
+    await actorCharacterScope(input.actor, "creative.run.write"),
+    "creative.run.write",
+    current ? creativeRunCharacterId(current) : null,
+  );
   if (!current) throw Errors.notFound("Creative Run not found");
   if (current.ownerId !== null) throw Errors.conflict("Creative Run is already assigned", { ownerId: current.ownerId });
   const changed = await tx.contentProductionBatch.updateMany({
@@ -67,7 +80,8 @@ async function claimActor(request: Request, body: TodayClaimRequest) {
   if (body.sourceType === "ops_incident") {
     return actorWithPermission(request, "ops.incident.manage");
   }
-  return actorWithPermission(request, "creative.run.write");
+  // INTENT: 请求只带 Run id；角色范围由 `claimCreativeRun` 按 Run 所属角色逐条核对。
+  return actorWithPermission(request, "creative.run.write", { characterScope: "handler_enforced" });
 }
 
 async function applyClaim(

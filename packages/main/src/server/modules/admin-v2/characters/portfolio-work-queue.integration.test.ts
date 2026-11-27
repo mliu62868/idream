@@ -12,7 +12,7 @@ const day = (value: string) => new Date(`${value}T00:00:00.000Z`);
 describe("Character portfolio work queues and performance loop", () => {
   const suffix = randomUUID();
   const adminId = `queue-admin-${suffix}`;
-  const roles = ["healthy", "chat-only", "silent", "paused", "archived", "failed", "pending", "stale", "candidate", "user"] as const;
+  const roles = ["healthy", "chat-only", "silent", "paused", "archived", "retired", "failed", "pending", "stale", "candidate", "blocked-candidate", "user"] as const;
   const id = (role: string) => `queue-${role}-${suffix}`;
   const ids = roles.map(id);
   const scope = { asOf, authorizedCharacterIds: ids, authorizedDraftAssetCharacterIds: null };
@@ -86,10 +86,14 @@ describe("Character portfolio work queues and performance loop", () => {
     await createRole("silent");
     await createRole("paused", { state: "paused" });
     await createRole("archived", { state: "retired", published: null });
+    // 已发布后永久退役：保留 currentRelease，不能恢复为草稿。
+    await createRole("retired", { state: "retired" });
     await createRole("failed", { state: "inactive", published: null });
     await createRole("pending");
     await createRole("stale", { readiness: "stale" });
     await createRole("candidate");
+    // 历史遗留：发布校验失败后仍停在 approved + blocked 的候选（现在校验失败会当场撤回）。
+    await createRole("blocked-candidate", { readiness: "stale" });
     await createRole("user", { source: "user", state: "inactive", published: null });
 
     await prisma.characterRevision.create({ data: { id: `${id("pending")}-rev-2`, projectId: `${id("pending")}-project`, revision: 2, characterContentVersionId: `${id("pending")}-content`, projectSnapshot: {} } });
@@ -97,6 +101,11 @@ describe("Character portfolio work queues and performance loop", () => {
       id: `${id("candidate")}-next`, projectId: `${id("candidate")}-project`, revisionId: `${id("candidate")}-rev-1`,
       characterContentVersionId: `${id("candidate")}-content`, generationProvenance: {}, releasePlacementManifest: {},
       snapshotHash: `${id("candidate")}-next`, readiness: "ready", legacy: true, status: "approved",
+    } });
+    await prisma.characterRelease.create({ data: {
+      id: `${id("blocked-candidate")}-next`, projectId: `${id("blocked-candidate")}-project`, revisionId: `${id("blocked-candidate")}-rev-1`,
+      characterContentVersionId: `${id("blocked-candidate")}-content`, generationProvenance: {}, releasePlacementManifest: {},
+      snapshotHash: `${id("blocked-candidate")}-next`, readiness: "blocked", legacy: true, status: "approved",
     } });
 
     // 有人聊，但聊天没带曝光入口，所以没有曝光和漏斗行。
@@ -181,35 +190,53 @@ describe("Character portfolio work queues and performance loop", () => {
   // SPEC: 归档草稿 updatedAt 新，曾排在「全部」最前面。
   it("keeps archived Characters out of the All view and in their own view", async () => {
     expect(await names({ excludeArchived: true })).not.toContain(id("archived"));
-    expect(await names({ servingState: "retired" })).toEqual([id("archived")]);
+    expect(await names({ excludeArchived: true })).not.toContain(id("retired"));
+    // 旧的原始 Serving 筛选仍可用：retired 同时命中归档草稿与已退役。
+    expect(await names({ servingState: "retired" })).toEqual([id("archived"), id("retired")].sort());
     expect(await names({ servingState: "paused" })).toEqual([id("paused")]);
     // 角色详情等默认调用方仍读得到。
     expect(await names({})).toContain(id("archived"));
   });
 
+  // SPEC: 归档草稿（无 currentRelease，可恢复）与已退役（保留 currentRelease，不可恢复）分开筛、分开计数。
+  it("separates archived drafts from permanently retired Characters", async () => {
+    expect(await names({ lifecycle: "archived" })).toEqual([id("archived")]);
+    expect(await names({ lifecycle: "retired" })).toEqual([id("retired")]);
+    expect(await names({ lifecycle: "draft" })).toEqual([id("failed"), id("user")].sort());
+    expect(await names({ lifecycle: "retired", servingState: "retired" })).toEqual([id("retired")]);
+    expect(await names({ lifecycle: "retired", servingState: "live" })).toEqual([]);
+    const { facets } = await list({ includeFacets: true });
+    expect(facets?.viewCounts).toMatchObject({ archived: 1, retired: 1 });
+    const retired = await list({ includeFacets: true, lifecycle: "retired" });
+    expect(retired.facets?.viewCounts).toMatchObject({ archived: 1, retired: 1, candidate_unpublished: 0, publish_blocked: 0 });
+  });
+
   it("filters each work queue before paginating and counts every view exactly", async () => {
     expect(await names({ workQueue: "pending_changes" })).toEqual([id("pending")]);
-    expect(await names({ workQueue: "candidate_unpublished" })).toEqual([id("candidate")]);
+    // 历史遗留的 approved + blocked 候选只进 candidate_unpublished；即使当前 Release 也 stale，
+    // 处置仍是发布或放弃候选，不再同时出现在 publish_blocked。
+    expect(await names({ workQueue: "candidate_unpublished" })).toEqual([id("blocked-candidate"), id("candidate")].sort());
     expect(await names({ workQueue: "publish_blocked" })).toEqual([id("stale")]);
     // 没有视觉身份的角色下一步是建身份，失败 Run 不抢这一步；有身份的情形见 portfolio.integration。
     expect(await names({ workQueue: "recent_generation_failed" })).toEqual([]);
     const { facets } = await list({ includeFacets: true });
     expect(facets?.viewCounts).toMatchObject({
-      all: 9,
+      all: 10,
       draft: 2,
-      live: 6,
+      live: 7,
       paused: 1,
       archived: 1,
+      retired: 1,
       pending_changes: 1,
-      candidate_unpublished: 1,
+      candidate_unpublished: 2,
       publish_blocked: 1,
     });
-    // 零流量且 live 的只有 silent、stale、candidate；healthy/pending 有曝光，chat-only 有聊天。
-    expect(facets?.viewCounts.attention).toBe(3);
+    // 零流量且 live 的只有 silent、stale、candidate、blocked-candidate；healthy/pending 有曝光，chat-only 有聊天。
+    expect(facets?.viewCounts.attention).toBe(4);
     const paused = await list({ includeFacets: true, servingState: "paused" });
     // The lifecycle buttons retain their counts, while the task facets apply the selected lifecycle.
     expect(paused.facets?.viewCounts).toMatchObject({
-      all: 9, draft: 2, live: 6, paused: 1, archived: 1,
+      all: 10, draft: 2, live: 7, paused: 1, archived: 1, retired: 1,
       pending_changes: 0, candidate_unpublished: 0, publish_blocked: 0, attention: 0,
     });
     // 不要的调用方不付这个代价。
@@ -218,7 +245,7 @@ describe("Character portfolio work queues and performance loop", () => {
 
   it("stops at the first page of a queue and keeps the keyset consistent", async () => {
     const first = await list({ excludeArchived: true, limit: 4, sort: "project_id_asc" });
-    expect(first.pageInfo.totalCount).toBe(9);
+    expect(first.pageInfo.totalCount).toBe(10);
     const second = await list({ excludeArchived: true, limit: 4, sort: "project_id_asc", cursor: first.pageInfo.endCursor });
     const seen = [...first.items, ...second.items].map((item) => item.characterId);
     expect(new Set(seen).size).toBe(8);

@@ -6,6 +6,8 @@ const { adminV2Operation, createOrRecoverMissingCharacterImage } = vi.hoisted(()
   createOrRecoverMissingCharacterImage: vi.fn(),
 }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
+
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 vi.mock("./creative-run-creation", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./creative-run-creation")>()),
   createOrRecoverMissingCharacterImage,
@@ -19,11 +21,13 @@ import {
   planBulkTasks,
   runBulkTasks,
 } from "./character-bulk-operations";
+import { CharacterCommandFailedError } from "./release-command";
 
 function item(
   id: string,
   overrides: {
     state?: string;
+    currentReleaseId?: string | null;
     blocker?: CharacterPortfolioItem["journey"]["assetPack"]["generateMissingBlocker"];
     draftMissing?: string[];
     draftCompleted?: number;
@@ -33,7 +37,7 @@ function item(
   return {
     characterId: id,
     name: `Name ${id}`,
-    serving: { state: overrides.state ?? "live", version: 7 },
+    serving: { state: overrides.state ?? "live", version: 7, currentReleaseId: overrides.currentReleaseId ?? null },
     journey: {
       hasActiveCommand: overrides.blocker === "active_command",
       // An operational recommendation can send the user to Monitor while generation is blocked.
@@ -65,11 +69,26 @@ describe("bulk eligibility", () => {
     expect(bulkActionBlocker("add_tag", item("a", { state: "retired" }))).toBeNull();
   });
 
+  // SPEC: 恢复草稿只对归档草稿可用；已退役（保留 currentRelease）的角色给出明确的不可恢复原因。
+  it("restores only archived drafts and says why a retired Character is skipped", () => {
+    expect(bulkActionBlocker("restore", item("a", { state: "retired" }))).toBeNull();
+    expect(bulkActionBlocker("restore", item("a", { state: "retired", currentReleaseId: "r1" }))).toBe("Retired permanently. Retired characters cannot be restored.");
+    expect(bulkActionBlocker("restore", item("a", { state: "inactive" }))).toBe("Only archived drafts can be restored.");
+    expect(bulkActionBlocker("restore", item("a", { state: "retired", blocker: "active_command" }))).toContain("in progress");
+    const plan = planBulkTasks({ kind: "restore" }, [
+      item("archived", { state: "retired" }),
+      item("retired", { state: "retired", currentReleaseId: "r1" }),
+    ]);
+    expect(plan.tasks.map((task) => task.characterId)).toEqual(["archived"]);
+    expect(plan.skipped).toEqual([{ characterId: "retired", name: "Name retired", reason: "Retired permanently. Retired characters cannot be restored." }]);
+  });
+
   it("explains why image generation does not apply", () => {
     expect(bulkActionBlocker("generate_missing", item("a", { blocker: "visual_identity_missing" }))).toBe("No visual identity yet.");
     expect(bulkActionBlocker("generate_missing", item("a", { blocker: "generation_route_unqualified" }))).toContain("Platform operations");
     expect(bulkActionBlocker("generate_missing", item("a", { blocker: "image_run_in_progress" }))).toContain("in progress");
-    expect(bulkActionBlocker("generate_missing", item("a", { state: "retired" }))).toContain("retired");
+    expect(bulkActionBlocker("generate_missing", item("a", { state: "retired" }))).toBe("Archived draft. Restore it first.");
+    expect(bulkActionBlocker("generate_missing", item("a", { state: "retired", currentReleaseId: "r1" }))).toContain("Retired permanently");
     expect(bulkActionBlocker("generate_missing", item("a", { draftMissing: [], draftCompleted: 3 }))).toBe("No missing images.");
     // 线上齐、草稿空的健康角色没有缺图，不能白花钱。
     expect(bulkActionBlocker("generate_missing", item("a", { draftCompleted: 0, draftMissing: ["character_cover", "character_hero", "character_chat"] }))).toBe("No missing images.");
@@ -154,6 +173,23 @@ describe("bulk execution", () => {
     await expect(run(task("a"))).rejects.toThrow("Command failed.");
   });
 
+  it("restores an archived draft through the restore command with an automatic reason", async () => {
+    adminV2Operation.mockImplementation(async (id: string) =>
+      id.startsWith("POST") ? { status: "accepted", commandId: "c1" } : { status: "succeeded" },
+    );
+    const run = createBulkExecutor({
+      action: { kind: "restore" },
+      actorId: "actor",
+      itemByCharacter: new Map([["a", item("a", { state: "retired" })]]),
+      sleep,
+    });
+    await expect(run(task("a"))).resolves.toBe("succeeded");
+    expect(adminV2Operation).toHaveBeenCalledWith("POST /api/v2/admin/characters/:id/commands/restore", {
+      path: { id: "a" },
+      body: { entityVersion: 7, reason: { code: "operator_restore", summary: "Restore draft" }, confirmation: "a:restore" },
+    });
+  });
+
   it("re-reads the version on retry so a stale list cannot wedge the item", async () => {
     adminV2Operation.mockImplementation(async (id: string) =>
       id === "GET /api/v2/admin/characters/:id"
@@ -182,7 +218,7 @@ describe("bulk execution", () => {
     await run(task("a"));
     expect(adminV2Operation).toHaveBeenCalledWith("PUT /api/v2/admin/content/characters/:id/tags", {
       path: { id: "a" },
-      body: { tagIds: ["old", "new"], confirmation: "a:tags" },
+      body: { tagIds: ["old", "new"], expectedTagIds: ["old"], confirmation: "a:tags" },
     });
     adminV2Operation.mockClear();
     const remove = createBulkExecutor({
@@ -192,6 +228,40 @@ describe("bulk execution", () => {
     });
     await remove(task("a"));
     expect(adminV2Operation.mock.calls.some(([id]) => id.startsWith("PUT"))).toBe(false);
+  });
+
+  // SPEC: 读后被别人改过标签时服务端 409；重读一次重算，仍冲突就作为该行失败，绝不覆盖别人的写入。
+  it("re-reads once after a tag conflict and fails the row if it still conflicts", async () => {
+    const conflict = () => new AdminV2RequestError("Character tags changed since they were read", 409, "conflict", { blocker: "version_mismatch" });
+    let reads = 0;
+    let puts = 0;
+    adminV2Operation.mockImplementation(async (id: string) => {
+      if (id.startsWith("GET")) {
+        reads += 1;
+        return { character: { tags: reads === 1 ? [{ id: "old" }] : [{ id: "old" }, { id: "other" }] } };
+      }
+      puts += 1;
+      if (puts === 1) throw conflict();
+      return {};
+    });
+    const run = createBulkExecutor({
+      action: { kind: "add_tag", tagId: "new", tagLabel: "New" },
+      actorId: "actor",
+      itemByCharacter: new Map([["a", item("a")]]),
+    });
+    await expect(run(task("a"))).resolves.toBe("succeeded");
+    expect(adminV2Operation.mock.calls.filter(([id]) => id.startsWith("PUT")).map(([, options]) => options.body)).toEqual([
+      { tagIds: ["old", "new"], expectedTagIds: ["old"], confirmation: "a:tags" },
+      { tagIds: ["old", "other", "new"], expectedTagIds: ["old", "other"], confirmation: "a:tags" },
+    ]);
+
+    adminV2Operation.mockReset();
+    adminV2Operation.mockImplementation(async (id: string) => {
+      if (id.startsWith("GET")) return { character: { tags: [{ id: "old" }] } };
+      throw conflict();
+    });
+    await expect(run(task("a"))).rejects.toThrow("Tags changed while this was running");
+    expect(adminV2Operation.mock.calls.filter(([id]) => id.startsWith("PUT"))).toHaveLength(2);
   });
 
   it("creates images through the durable Run protocol, one scope per image", async () => {
@@ -253,7 +323,8 @@ describe("bulk execution", () => {
       },
     } as unknown as CharacterPortfolioItem;
     expect(bulkActionBlocker("publish", readyItem)).toBeNull();
-    expect(bulkActionBlocker("publish", item("a", { state: "retired" }))).toContain("retired");
+    expect(bulkActionBlocker("publish", item("a", { state: "retired" }))).toBe("Archived draft. Restore it first.");
+    expect(bulkActionBlocker("publish", item("a", { state: "retired", currentReleaseId: "r1" }))).toContain("Retired permanently");
 
     adminV2Operation.mockImplementation(async (id: string) => {
       if (id === "GET /api/v2/admin/characters/:id") return { project: { version: 3 }, releases: [] };
@@ -275,5 +346,24 @@ describe("bulk execution", () => {
         body: { entityVersion: 1, confirmation: "a:rel-1:publish", reason: { code: "operator_publish", summary: "Publish current Character" } },
       }),
     );
+  });
+
+  // SPEC: 发布校验失败时服务端已撤回候选；该行失败并带回 blockers，运营打开角色即可直接改草稿。
+  it("fails a bulk publish row with the release blockers when validation withdraws the candidate", async () => {
+    const readyItem = {
+      ...item("a", { state: "inactive" }),
+      journey: { ...item("a", { state: "inactive" }).journey, stage: "publishing", blockers: [], release: { candidateReleaseId: null, pendingRevision: null } },
+    } as unknown as CharacterPortfolioItem;
+    adminV2Operation.mockImplementation(async (id: string) => {
+      if (id === "GET /api/v2/admin/characters/:id") return { project: { version: 3 }, releases: [] };
+      if (id === "POST /api/v2/admin/characters/:id/releases") return { id: "rel-1", version: 1 };
+      if (id.endsWith("/commands/publish")) return { status: "accepted", commandId: "cmd-pub-1" };
+      return { status: "failed", error: { code: "release_validation_failed", blockers: ["opening_complete"], validationRunId: "run-1", candidateWithdrawn: true } };
+    });
+    const run = createBulkExecutor({ action: { kind: "publish" }, actorId: "actor", itemByCharacter: new Map([["a", readyItem]]), sleep });
+    const failure = await run(task("a")).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(CharacterCommandFailedError);
+    expect((failure as CharacterCommandFailedError).message).toBe("Release checks failed. The candidate was withdrawn and the draft can be edited again.");
+    expect((failure as CharacterCommandFailedError).failure).toMatchObject({ blockers: ["opening_complete"], candidateWithdrawn: true });
   });
 });

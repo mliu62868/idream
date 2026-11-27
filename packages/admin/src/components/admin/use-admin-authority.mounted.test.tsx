@@ -22,7 +22,7 @@ const bootstrapBody = (permissions: readonly string[] = GRANTED) => ({
 
 const observed: { current: ReturnType<typeof useAdminAuthority> | null } = { current: null };
 function Harness() {
-  const [initial] = useState({ actor: { id: "producer-1", role: "support" }, permissions: GRANTED as never[], canCreateCharacters: false });
+  const [initial] = useState({ actor: { id: "producer-1", role: "support" }, permissions: GRANTED as never[], canCreateCharacters: false, canAssistCharacterDrafts: false });
   const authority = useAdminAuthority(initial);
   useEffect(() => { observed.current = authority; });
   return null;

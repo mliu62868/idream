@@ -121,6 +121,8 @@ export type CharacterCommandStatusOutcome =
       readonly kind: "settled";
       readonly status: AdminCommandStatus["status"];
       readonly succeeded: boolean;
+      /** 服务端记录的终局错误证据（失败时才有）；解释权在 release-command，不在这里。 */
+      readonly error?: unknown;
     }
   /** 命令证据 404；服务端必须先证明没有命令还活着。 */
   | { readonly kind: "evidence_missing" }
@@ -246,7 +248,20 @@ export type CharacterCommandJournalSnapshot = {
    */
   readonly recoveryError: CharacterCommandMessage | null;
   readonly recoveryErrorCommandId: string | null;
+  /**
+   * 最近一条以失败终局的命令及其服务端错误证据。
+   * INTENT: 发布校验失败时，候选已被服务端撤回、草稿已解冻；发布页要据此直接列出 blockers
+   *         与修复入口，而不是只说「命令失败，去看证据」。下一次提交开始时清零。
+   */
+  readonly lastFailure: CharacterCommandTerminalFailure | null;
   readonly writesLocked: boolean;
+};
+
+export type CharacterCommandTerminalFailure = {
+  readonly commandId: string | null;
+  readonly action: string;
+  readonly status: AdminCommandStatus["status"];
+  readonly error: unknown;
 };
 
 type CharacterCommandStorage = Pick<
@@ -668,11 +683,13 @@ export function createCharacterCommandJournal(options: {
   let notice: CharacterMutationNotice | null = null;
   let recoveryError: CharacterCommandMessage | null = null;
   let recoveryErrorCommandId: string | null = null;
+  let lastFailure: CharacterCommandTerminalFailure | null = null;
   let snapshot: CharacterCommandJournalSnapshot = {
     command: null,
     notice: null,
     recoveryError: null,
     recoveryErrorCommandId: null,
+    lastFailure: null,
     writesLocked: false,
   };
   let pendingCleanup: {
@@ -688,7 +705,8 @@ export function createCharacterCommandJournal(options: {
       snapshot.command === command &&
       snapshot.notice === notice &&
       snapshot.recoveryError === recoveryError &&
-      snapshot.recoveryErrorCommandId === recoveryErrorCommandId
+      snapshot.recoveryErrorCommandId === recoveryErrorCommandId &&
+      snapshot.lastFailure === lastFailure
     )
       return;
     snapshot = {
@@ -696,6 +714,7 @@ export function createCharacterCommandJournal(options: {
       notice,
       recoveryError,
       recoveryErrorCommandId,
+      lastFailure,
       writesLocked: command !== null || notice !== null,
     };
     for (const listener of listeners) listener();
@@ -751,6 +770,7 @@ export function createCharacterCommandJournal(options: {
   const remember = (next: PendingCharacterCommand) => {
     if (!command || !isSamePendingCharacterCommand(command, next)) {
       advanceGeneration();
+      lastFailure = null;
     }
     command = next;
     notice = noticeForCommand(next);
@@ -995,6 +1015,7 @@ export function createCharacterCommandJournal(options: {
         kind: "settled",
         status: status.status,
         succeeded: status.status === "succeeded",
+        ...(status.error === undefined ? {} : { error: status.error }),
       };
     } catch (cause) {
       if (cause instanceof AdminV2RequestError && cause.outcome === "answered" && cause.status === 404) {
@@ -1090,6 +1111,7 @@ export function createCharacterCommandJournal(options: {
     beginSubmission(message) {
       if (command || notice) return false;
       advanceGeneration();
+      lastFailure = null;
       notice = { kind: "mutation_in_flight", message };
       publish();
       return true;
@@ -1200,6 +1222,14 @@ export function createCharacterCommandJournal(options: {
               discard(target);
             },
           });
+          lastFailure = status.succeeded
+            ? null
+            : {
+                commandId: target.commandId,
+                action: target.action,
+                status: status.status,
+                error: status.error,
+              };
           setRecoveryError(
             status.succeeded
               ? null

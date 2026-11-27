@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHARACTER_DEFAULT_REFERENCE_DIRECTION,
   characterProjectCreateRequestSchema,
   characterProjectCreateResponseSchema,
   characterProjectDraftSchema,
@@ -8,6 +9,7 @@ import {
   characterSoulVersionCreateRequestSchema,
   customerCharacterPublicationPrepRequestSchema,
   customerCharacterPublicationPrepResponseSchema,
+  withCharacterVisualDirectionDefaults,
 } from "./characters-create";
 
 const validCreate = {
@@ -238,6 +240,47 @@ describe("Character Soul save contract", () => {
       characterSoulVersionCreateRequestSchema.safeParse({
         ...save,
         visualDirection: { ...validCreate.visualDirection, stableTraits: [] },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("Character visual direction defaults", () => {
+  const legacy = {
+    persona: validCreate.persona,
+    visualDirection: { identityAnchor: "", stableTraits: [] as string[], style: "realistic" as const, referenceDirection: "" },
+  };
+
+  it("fills the look from the first fixed feature and never from the description", () => {
+    const next = withCharacterVisualDirectionDefaults({
+      ...legacy,
+      visualDirection: { ...legacy.visualDirection, stableTraits: ["  ", " Grey beard ", "Wool cap"] },
+    });
+    expect(next.visualDirection).toMatchObject({
+      identityAnchor: "Grey beard",
+      stableTraits: ["  ", " Grey beard ", "Wool cap"],
+      referenceDirection: CHARACTER_DEFAULT_REFERENCE_DIRECTION,
+    });
+    const bare = withCharacterVisualDirectionDefaults(legacy);
+    expect(bare.visualDirection.identityAnchor).toBe("");
+    expect(bare.visualDirection.stableTraits).toEqual([]);
+    expect(JSON.stringify(bare.visualDirection)).not.toContain(validCreate.persona.characterPromise);
+  });
+
+  it("keeps the operator's own values and returns the same draft when nothing is missing", () => {
+    const filled = { ...legacy, visualDirection: validCreate.visualDirection };
+    expect(withCharacterVisualDirectionDefaults(filled)).toBe(filled);
+  });
+});
+
+describe("Character create tags", () => {
+  it("accepts an optional tag list within the tag write limit", () => {
+    expect(characterProjectCreateRequestSchema.safeParse(validCreate).success).toBe(true);
+    expect(characterProjectCreateRequestSchema.safeParse({ ...validCreate, tagIds: ["tag-1"] }).success).toBe(true);
+    expect(
+      characterProjectCreateRequestSchema.safeParse({
+        ...validCreate,
+        tagIds: Array.from({ length: 25 }, (_, index) => `tag-${index}`),
       }).success,
     ).toBe(false);
   });

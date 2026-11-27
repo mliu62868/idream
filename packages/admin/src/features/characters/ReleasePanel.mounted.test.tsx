@@ -112,6 +112,32 @@ describe("Character release history empty state", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("shows the server's record of the last failed publish after a refresh, with fix links", async () => {
+    const data = readyCharacter();
+    await render({
+      ...data,
+      lastFailedPublish: { releaseId: "candidate-withdrawn", failureCode: "release_validation_failed", blockers: ["opening_complete"], failedAt: "2026-11-26T10:00:02.000Z" },
+    });
+    expect(container.querySelector('[data-testid="release-publish-failure"]')?.textContent)
+      .toBe("上次发布未通过发布检查，候选已撤回，草稿可以编辑；修复下列项目后重新发布。");
+    const blockers = container.querySelector('[data-testid="release-blockers"]')!;
+    expect(blockers.textContent).toContain("发布前请填写开场消息。");
+    expect(blockers.querySelector<HTMLAnchorElement>('a[href$="?tab=soul"]')).not.toBeNull();
+    expect(publishButton()?.disabled).toBe(false);
+  });
+
+  it("explains an automatic withdrawal that has no release-check blockers", async () => {
+    const data = readyCharacter();
+    await render({
+      ...data,
+      lastFailedPublish: { releaseId: "candidate-withdrawn", failureCode: "release_projection_invalid", blockers: [], failedAt: "2026-11-26T10:00:02.000Z" },
+    });
+    const notice = container.querySelector('[data-testid="release-publish-failure"]');
+    expect(notice?.textContent).toContain("上次发布未能上线，候选已撤回，草稿可以编辑");
+    expect(notice?.textContent).toContain("release_projection_invalid");
+    expect(publishButton()?.disabled).toBe(false);
+  });
+
   it("keeps stale-release recovery disabled without publish permission", async () => {
     const request = vi.spyOn(transport, "adminV2Request");
     await render(unchangedLiveCharacter("stale"), false);
@@ -180,6 +206,68 @@ describe("Character release history empty state", () => {
     expect(request.mock.calls[1][0]).toContain("/releases/candidate-1/commands/publish");
     expect(journal.getSnapshot().command?.commandId).toBe("publish-command");
     expect(journal.getSnapshot().writesLocked).toBe(true);
+  });
+
+  // SPEC: publish 命令校验失败时服务端已撤回候选、解冻草稿。发布页直接列出 blockers 与修复入口，
+  //       不再引导「放弃候选」；运营改过草稿后，这份失败证据退场。
+  it("shows the blockers and repair links of a failed publish whose candidate was withdrawn, without discard guidance", async () => {
+    const data = readyCharacter();
+    vi.spyOn(transport, "adminV2Request").mockImplementation(async (path) => {
+      if (path.endsWith("/releases")) return { id: "candidate-1", version: 1 };
+      if (path.endsWith("/releases/candidate-1/commands/publish")) return { commandId: "publish-command" };
+      if (path.includes("/api/v2/admin/commands/")) {
+        return {
+          commandId: "publish-command", requestId: "request-1", commandType: "character.release.publish",
+          target: { type: "character_release", id: "candidate-1" }, status: "failed", needsReconciliation: false,
+          error: { code: "release_validation_failed", blockers: ["opening_complete"], validationRunId: "run-1", candidateWithdrawn: true, withdrawnReleaseId: "candidate-1" },
+          createdAt: "2026-09-05T00:00:00.000Z", updatedAt: "2026-09-05T00:00:01.000Z",
+        };
+      }
+      throw new Error(`Unexpected ${path}`);
+    });
+    const journal = createCharacterCommandJournal({ actorId: "release-operator", characterId: data.character.id, storage: null });
+    await render(data, true, journal);
+    await act(async () => publishButton()!.click());
+    for (let i = 0; i < 20 && journal.getSnapshot().command?.commandId !== "publish-command"; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    const pending = journal.getSnapshot().command!;
+    expect(container.querySelector('[role="alert"]')?.textContent ?? null).toBeNull();
+    expect(pending.commandId).toBe("publish-command");
+    const copy = new Proxy({}, { get: () => () => "recovery" }) as Parameters<typeof journal.recover>[0]["copy"];
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await journal.recover({
+        command: pending, copy,
+        load: async () => ({ activeCommand: null }),
+        settle: async ({ onSettled }) => onSettled(),
+      });
+    });
+    expect(outcome).toMatchObject({ disposition: "failed" });
+    expect(journal.getSnapshot().command).toBeNull();
+    // 刷新后的工作台：候选已 withdrawn，没有待发布版本，草稿可编辑。
+    const stamp = "2026-09-05T00:00:00.000Z";
+    const refreshed = characterWorkspaceDetail({
+      ...data,
+      releases: [{ release: {
+        id: "candidate-1", projectId: data.project.id, revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+        visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+        snapshotHash: "snapshot", readiness: "blocked", status: "withdrawn", legacy: false, publishedAt: null, supersedesId: null, rollbackOfReleaseId: null,
+        version: 2, createdAt: stamp, updatedAt: stamp,
+      }, checks: [], monitors: [] }],
+    });
+    await render(refreshed, true, journal);
+    expect(container.querySelector('[data-testid="release-publish-failure"]')?.textContent).toBe("发布检查未通过。候选已自动撤回，草稿可以继续编辑。");
+    const blockers = container.querySelector('[data-testid="release-blockers"]')!;
+    expect(blockers.textContent).toContain("发布前请填写开场消息。");
+    expect(blockers.querySelector<HTMLAnchorElement>('a[href$="?tab=soul"]')?.textContent).toBe("打开角色设定");
+    expect(button("放弃待发布版本")).toBeUndefined();
+    expect(container.textContent).not.toContain("待发布");
+    expect(publishButton()?.disabled).toBe(false);
+    // 运营改过草稿：失败证据描述的是旧草稿，退场。
+    await render(withCharacterWorkspaceDetail(refreshed, { project: { version: refreshed.project.version + 1 } }), true, journal);
+    expect(container.querySelector('[data-testid="release-publish-failure"]')).toBeNull();
+    expect(container.textContent).not.toContain("发布前请填写开场消息。");
   });
 
   it("releases the submission lock when candidate creation is explicitly rejected", async () => {
@@ -507,5 +595,30 @@ describe("Character release history empty state", () => {
     const show = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "在 Explore 显示");
     expect(show).toBeDefined();
     expect(show!.disabled).toBe(true);
+  });
+
+  // SPEC: 发布页说出哪些改动不随发布、立即生效，并给出当前线上声音与去处；它本身只读。
+  it("lists the live voice and the changes that skip the Release, read-only, with links to their tabs", async () => {
+    const request = vi.spyOn(transport, "adminV2Request");
+    const data = characterWorkspaceDetail({
+      voice: {
+        authoritySource: "system_default",
+        effectiveVoiceId: "fish-female-default",
+        systemDefaults: { catalog: [{ id: "fish-female-default", label: "Warm female", presentation: "female", description: "Default" }] },
+      },
+    });
+    await render(data);
+    const notice = container.querySelector('[data-testid="immediate-changes-notice"]')!;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("立即对新会话生效，不随发布");
+    expect(notice.querySelector('[data-testid="immediate-changes-live-voice"]')?.textContent).toBe("Warm female");
+    expect([...notice.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual([
+      "/admin/characters/character-fixture?tab=voice",
+      "/admin/ops/profiles?tab=voice",
+      "/admin/characters/character-fixture?tab=assets",
+      "/admin/characters/character-fixture?tab=video",
+    ]);
+    expect(notice.querySelector("button")).toBeNull();
+    expect(request).not.toHaveBeenCalled();
   });
 });

@@ -65,6 +65,20 @@ describe("disabled model profile visibility", () => {
     await waitUntil(() => tab("Settings").querySelector("span")?.textContent === "Settings0");
   });
 
+  // SPEC: 全平台默认声音住在这里的第三个页签；它自己读写，不带搜索 / 分页表单，也不读档案列表。
+  it("opens the voice defaults tab from its deep link without the list filters", async () => {
+    window.history.replaceState(null, "", "/admin/ops/profiles?tab=voice");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true, voiceDefaults: { read: false, write: false, preview: false } }} />);
+    });
+    await waitUntil(() => container.querySelector('[data-testid="platform-voice-defaults"]') !== null);
+    expect(container.querySelector("form")).toBeNull();
+    expect(container.querySelector('[data-testid="platform-voice-defaults"] select')).toBeNull();
+    expect([...container.querySelectorAll("button")].find((button) => button.textContent?.startsWith("Voice defaults"))?.getAttribute("aria-current")).toBe("page");
+    expect(apiGet).not.toHaveBeenCalled();
+  });
+
   it("does not invent a page number for a shared cursor and offers a way back to the first page", async () => {
     window.history.replaceState(null, "", "/admin/ops/profiles?profileCursor=shared-cursor");
     await act(async () => {

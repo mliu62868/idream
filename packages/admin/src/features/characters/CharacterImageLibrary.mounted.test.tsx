@@ -145,6 +145,28 @@ describe("Character image library imported Review", () => {
     expect(adminV2Operation.mock.calls.every(([operation]) => operation.startsWith("GET "))).toBe(true);
   });
 
+  // SPEC: 发布运营（能读图库、不能生图）看得到图库，看不到生图与导入入口，也不会被带进创作区。
+  it("shows a read-only library without any generation entry to an operator who cannot create", async () => {
+    adminV2Operation.mockResolvedValue({ items: [importedAsset()] });
+    const data = structuredClone(characterWorkspaceDetail());
+    data.visual.identityBootstrap.allowed = true;
+    await act(async () => root.render(
+      <CharacterImageLibrary actorId="publisher-1" canArchive={false} canCreate={false} canRead
+        canReadProduction
+        commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+        data={data} onContinue={() => undefined}
+        onProjectReload={async () => undefined} />,
+    ));
+    await waitUntil(() => container.textContent?.includes("final-character.webp") === true);
+    const buttons = [...container.querySelectorAll("button")].map((button) => button.textContent?.trim());
+    expect(buttons).not.toContain("Create images");
+    expect(buttons).not.toContain("Import image");
+    expect(buttons).not.toContain("Import existing image");
+    // The hidden file input is itself a focusable "Import image" control.
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    expect(container.querySelector('[data-testid="character-asset-studio"]')).toBeNull();
+  });
+
   it("refreshes completed image facts from the shell without losing the library filter", async () => {
     let current = importedAsset();
     adminV2Operation.mockImplementation(async () => ({ items: [current] }));
@@ -195,12 +217,12 @@ describe("Character image library imported Review", () => {
     await act(async () => root.render(<CharacterImageLibrary {...libraryProps} canArchive={false} data={characterWorkspaceDetail()} />));
     await waitUntil(() => container.querySelectorAll("article").length === 2);
     const [usedCard, freeCard] = [...container.querySelectorAll("article")];
-    expect(usedCard.querySelector('[data-testid="image-placements"]')?.textContent).toContain("Cover");
+    expect(usedCard.querySelector('[data-testid="image-placements"]')?.textContent).toContain("Primary portrait");
     expect(usedCard.querySelector('[data-testid="image-placement-actions"]')).toBeNull();
     // The server's placeholder name is replaced by when the image was made.
     expect(freeCard.textContent).not.toContain("image-source.png");
     expect(freeCard.textContent).toMatch(/20\d\d/);
-    await act(async () => [...freeCard.querySelectorAll("button")].find((button) => button.textContent === "Use as hero")!.click());
+    await act(async () => [...freeCard.querySelectorAll("button")].find((button) => button.textContent === "Use as character hero")!.click());
     await waitUntil(() => adminV2Operation.mock.calls.some(([operationId]) => String(operationId).startsWith("PATCH ")));
     const call = adminV2Operation.mock.calls.find(([operationId]) => String(operationId).startsWith("PATCH "))!;
     expect(call[1]).toMatchObject({ ifMatch: 1, body: { purpose: "character_hero", assetId: "free-image" } });

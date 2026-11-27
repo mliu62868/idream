@@ -134,18 +134,5 @@ export function templateSuggestion(
   };
 }
 
-const DEFAULT_REFERENCE_DIRECTION = "Soft natural light, head-and-shoulders portrait, clean uncluttered background";
-
-// SPEC: 外貌只从已有视觉信息补齐。剧情简介不能当作形象提示。
-export function withVisualDirectionDefaults(draft: CharacterProjectDraft): CharacterProjectDraft {
-  const { visualDirection } = draft;
-  if (visualDirection.identityAnchor.trim() && visualDirection.referenceDirection.trim()) return draft;
-  return {
-    ...draft,
-    visualDirection: {
-      ...visualDirection,
-      identityAnchor: visualDirection.identityAnchor.trim() ? visualDirection.identityAnchor : visualDirection.stableTraits[0]?.trim() ?? "",
-      referenceDirection: visualDirection.referenceDirection.trim() ? visualDirection.referenceDirection : DEFAULT_REFERENCE_DIRECTION,
-    },
-  };
-}
+// SPEC: 外貌只从已有视觉信息补齐。剧情简介不能当作形象提示。规则只在 shared 里有一份，复制角色也用它。
+export { withCharacterVisualDirectionDefaults as withVisualDirectionDefaults } from "@idream/shared/admin";

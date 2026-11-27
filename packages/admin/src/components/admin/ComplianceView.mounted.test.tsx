@@ -44,7 +44,7 @@ describe("Compliance operator target and permission boundaries", () => {
 
   async function render(canWrite = true, locale: AdminLocale = "en") {
     const permissions = new Set<AdminPermissionKey>(["compliance.read", ...(canWrite ? ["compliance.write" as const] : [])]);
-    const context: SectionContext = { permissions, canCreateCharacters: false, actorId: "operator", canRead: true, view: { kind: "list" }, workMode: "support" };
+    const context: SectionContext = { permissions, canCreateCharacters: false, canAssistCharacterDrafts: false, actorId: "operator", canRead: true, view: { kind: "list" }, workMode: "support" };
     await act(async () => root.render(<AdminI18nProvider locale={locale}>{renderAdminSection("compliance", context)}</AdminI18nProvider>));
     await waitFor(() => container.textContent?.includes(ageRow.userId) === true);
   }

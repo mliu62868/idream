@@ -206,21 +206,18 @@ describe("Character create wizard restore authority", () => {
     expect(adminV2Request.mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
   });
 
-  it("saves optional tags after creating, and tags never hold up creating", async () => {
+  it("sends optional tags with the create request instead of a second write", async () => {
     const seed = {
       persona: { name: "Mira", age: 30, gender: "female", characterPromise: "A warm host", detailsMarkdown: "", firstMessage: "Hello there." },
       visualDirection: { identityAnchor: "Adult radio host", stableTraits: ["Dark hair"], style: "realistic", referenceDirection: "Warm portrait light" },
     };
     window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-tags", JSON.stringify(seed));
-    const puts: unknown[] = [];
+    const creates: unknown[] = [];
     adminV2Request.mockImplementation(async (path, options) => {
       if (path === "/api/v2/admin/content/tags") return { items: [{ id: "tag-1", label: "Slow burn" }] };
       if (path === "/api/v2/admin/characters" && options?.method === "POST") {
+        creates.push(options.body);
         return { characterId: "chr-1", characterContentVersionId: "v1", projectId: "p1", revisionId: "r1", projectVersion: 1, contentVersion: 1, deepLink: "/admin/characters/chr-1?tab=assets", replayed: false };
-      }
-      if (String(path).endsWith("/content/characters/chr-1/tags")) {
-        puts.push(options?.body);
-        return { characterId: "chr-1", tags: [] };
       }
       throw new Error(`unexpected ${path}`);
     });
@@ -229,7 +226,8 @@ describe("Character create wizard restore authority", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="character-create-tags"] button')!.click());
     await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Save private draft"))!.click());
     await waitUntil(() => routerPush.mock.calls.length === 1);
-    expect(puts).toEqual([{ tagIds: ["tag-1"], confirmation: "chr-1:tags" }]);
+    expect(creates).toEqual([expect.objectContaining({ tagIds: ["tag-1"], confirmation: "CREATE CHARACTER" })]);
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method && options.method !== "GET")).toHaveLength(1);
     expect(routerPush).toHaveBeenCalledWith("/admin/characters/chr-1?tab=assets");
   });
 
@@ -274,8 +272,46 @@ describe("Character create wizard restore authority", () => {
       firstMessage: values["persona.firstMessage"],
       detailsMarkdown: values["persona.detailsMarkdown"],
     });
-    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Save private draft")).toBe(false);
     expect(saved.visualDirection).toMatchObject({ identityAnchor: "", stableTraits: [] });
+
+    // The shortcut is always there; with no fixed feature it says so in place instead of vanishing.
+    const quickSave = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save private draft")!;
+    expect(quickSave).toBeDefined();
+    await act(async () => quickSave.click());
+    const missing = container.querySelector('[data-testid="character-create-quick-save-missing"]');
+    expect(missing?.getAttribute("role")).toBe("alert");
+    expect(missing?.textContent).toContain("Add at least one feature that never changes.");
+    expect(missing?.textContent).not.toContain("Describe the image mood and framing.");
+    expect(container.querySelector('[name="persona.name"]')).not.toBeNull();
+    expect(adminV2Request).not.toHaveBeenCalled();
+    await act(async () => [...missing!.querySelectorAll("button")].find((button) => button.textContent?.includes("Add it in visual direction"))!.click());
+    await waitUntil(() => container.querySelector('[name="visualDirection.stableTraits"]') !== null);
+    // The description never stands in for the look.
+    expect(container.querySelector<HTMLTextAreaElement>('[name="visualDirection.identityAnchor"]')?.value).toBe("");
+  });
+
+  it("saves from the first step once the persona is complete and a fixed feature exists", async () => {
+    window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-quick", JSON.stringify({
+      ...restoredDraft,
+      visualDirection: { identityAnchor: "", stableTraits: ["Dark wavy hair"], style: "realistic", referenceDirection: "" },
+    }));
+    const creates: unknown[] = [];
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/characters" && options?.method === "POST") {
+        creates.push(options.body);
+        return { characterId: "chr-q", characterContentVersionId: "v1", projectId: "p1", revisionId: "r1", projectVersion: 1, contentVersion: 1, deepLink: "/admin/characters/chr-q?tab=assets", replayed: false };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-quick" canCreate />));
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    await openCreationStep(container, 0);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save private draft")!.click());
+    await waitUntil(() => routerPush.mock.calls.length === 1);
+    expect(creates).toEqual([expect.objectContaining({
+      visualDirection: expect.objectContaining({ identityAnchor: "Dark wavy hair", referenceDirection: expect.stringMatching(/\S/) }),
+    })]);
+    expect(creates[0]).not.toHaveProperty("tagIds");
   });
 
   it("returns a rejected placeholder from the final step to the editable field", async () => {
@@ -381,6 +417,24 @@ describe("Character create wizard restore authority", () => {
     await act(async () => save.click());
     expect(routerPush).toHaveBeenCalledWith("/admin/characters/assigned-character");
     expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+  });
+
+  // SPEC: tags travel only with the first create; a resumed server draft is an existing Character whose
+  //       tags are managed on the Persona tab, so the wizard must not offer a picker it cannot persist.
+  it("does not offer the tag picker when finishing a resumed server draft", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=assigned-character");
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assigned-character/project") && options?.method === "GET") return {
+        authority: { characterId: "assigned-character", projectId: "assigned-project", projectVersion: 3, deepLink: "/admin/characters/assigned-character" },
+        draft: restoredDraft,
+      };
+      throw new Error("Unexpected write");
+    });
+    await act(async () => root.render(<CharacterCreateWizard actorId="tagging-operator" canCreate canResumeDraft canTag />));
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    expect(container.querySelector('[data-testid="character-create-tags-elsewhere"]')?.textContent)
+      .toBe("This draft already exists. Manage its tags on the Persona tab after saving.");
+    expect(container.querySelector('[data-testid="character-create-tags"]')).toBeNull();
   });
 
   it("allows returning to an earlier step with invalid unsaved server-draft values", async () => {

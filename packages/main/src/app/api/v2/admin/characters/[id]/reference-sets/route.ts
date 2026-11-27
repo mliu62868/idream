@@ -13,8 +13,8 @@ export const runtime = "nodejs";
 
 export function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   return adminV2Route(request, async () => {
-    const actor = await actorWithPermission(request, "content.official.write");
     const { id } = await context.params;
+    const actor = await actorWithPermission(request, "content.official.write", { characterId: id });
     const body = await jsonBody(request, "characterReferenceSetPublishRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();

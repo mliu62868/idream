@@ -43,8 +43,9 @@ async function waitUntil(predicate: () => boolean, label: string) {
   }
 }
 
-const VOICE_DEFAULTS_READ_ONLY =
-  "Read-only: generation.config.write is required to change system voice defaults.";
+// The clone preview script is editable exactly when a Character voice write is allowed.
+const voicePreviewScript = () =>
+  document.querySelector<HTMLTextAreaElement>("#character-voice-preview-script");
 
 const permissions = new Set<AdminPermissionKey>([
   "character.project.read",
@@ -154,7 +155,81 @@ describe("Character workspace details", () => {
     ]);
   });
 
+  // SPEC: 交接按钮只给能写项目但没有发布权的 creator；有发布权的人只在发布页看到交接事实。
+  it.each([
+    { label: "publisher", granted: permissions, offered: false },
+    {
+      label: "creator",
+      granted: new Set([...permissions].filter((key) => key !== "character.release.publish")),
+      offered: true,
+    },
+  ])("offers the creation handoff button only to a $label who cannot publish", async ({ granted, offered }) => {
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace actorId="operator-a" permissions={granted}
+            view={{ kind: "detail", id: "character-detail" }} />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.querySelector("#character-panel-project") !== null, "Character overview");
+    expect(container.querySelector('[data-testid="character-handoff-action"]') !== null).toBe(offered);
+  });
+
+  // SPEC: 概览不再列状态格；创作者存了新修订这一事实改由头部「草稿」行说出。
+  it("states a saved but unpublished revision in the header draft line", async () => {
+    const revised = withCharacterWorkspaceDetail(workspace, {
+      journey: { release: { pendingRevision: { revision: 3, createdAt: "2026-09-20T08:00:00.000Z" } } },
+    });
+    const original = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path: string, ...args: unknown[]) =>
+      path === "/api/v2/admin/characters/character-detail" ? revised : original(path, ...args),
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace actorId="operator-a" permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }} />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.querySelector('[data-testid="character-draft-status"]') !== null, "header");
+    expect(container.querySelector('[data-testid="character-draft-status"]')?.textContent)
+      .toContain("Revision #3 not published");
+    expect(container.querySelector("#character-panel-project")?.textContent).not.toContain("Current status");
+  });
+
+  // SPEC: 导航按 概览 ｜ 设定 ｜ 素材 ｜ 上线 分组，组名可见；方向键跨组线性移动。
+  it("renders grouped tabs with visible group names and keeps arrow-key navigation across groups", async () => {
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace actorId="operator-a" permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }} />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.querySelector("#character-tab-project") !== null, "tab bar");
+    const groups = [...container.querySelectorAll<HTMLElement>('[data-testid^="character-tab-group-"]')];
+    expect(groups.map((group) => [...group.querySelectorAll('[role="tab"]')].map((tab) => tab.id.replace("character-tab-", ""))))
+      .toEqual([["project"], ["soul", "visual", "voice"], ["assets", "video"], ["release", "monitor"]]);
+    expect(groups.slice(1).map((group) => group.querySelector("span")?.textContent)).toEqual(["Setup", "Assets", "Go live"]);
+    expect(container.querySelector("#character-tab-visual")?.getAttribute("aria-describedby")).toBe("character-tab-group-settings");
+    const optgroups = [...container.querySelectorAll("select optgroup")].map((group) => group.getAttribute("label"));
+    expect(optgroups).toEqual(["Overview", "Setup", "Assets", "Go live"]);
+
+    const voice = container.querySelector<HTMLButtonElement>("#character-tab-voice")!;
+    await act(async () => voice.click());
+    await act(async () => {
+      voice.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
+    });
+    expect(window.location.search).toBe("?tab=assets");
+    expect(document.activeElement?.id).toBe("character-tab-assets");
+  });
+
+  // SPEC: 标签与聊天工具在「设定 › 人设」的独立小节里。
   it("does not request content-only settings without their read permission", async () => {
+    window.history.replaceState(null, "", "/admin/characters/character-detail?tab=soul");
     await act(async () => {
       root.render(
         <AdminI18nProvider locale="en">
@@ -167,8 +242,8 @@ describe("Character workspace details", () => {
       );
     });
     await waitUntil(
-      () => container.textContent?.includes("Character profile and status") === true,
-      "Character overview",
+      () => container.querySelector("#character-content-settings") !== null,
+      "tags and chat tools in Persona",
     );
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -192,6 +267,7 @@ describe("Character workspace details", () => {
       "content.read",
       grant,
     ]);
+    window.history.replaceState(null, "", "/admin/characters/character-detail?tab=soul");
     adminV2Request.mockImplementation(async (path: string) => {
       if (path.includes("/admin/content/tags")) {
         return { items: [{ id: "tag-friendly", label: "Friendly", category: null, isSensitive: false }] };
@@ -367,7 +443,8 @@ describe("Character workspace details", () => {
     )).toBe(false);
   });
 
-  it.each([false, true])("gates the live voice and all four default previews on generation config read: %s", async (canPreview) => {
+  // The four system-default previews moved to the platform configuration page with the editor.
+  it.each([false, true])("gates the live voice preview on generation config read: %s", async (canPreview) => {
     window.history.replaceState(null, "", "/admin/characters/character-detail?tab=voice");
     const voicePermissions = new Set<AdminPermissionKey>([
       "character.project.read",
@@ -394,15 +471,9 @@ describe("Character workspace details", () => {
     const previewButtons = () => [...container.querySelectorAll("button")].filter(
       (button) => button.textContent === "Preview",
     );
-    await waitUntil(() => previewButtons().length === 5, "live voice and four system default previews");
+    await waitUntil(() => previewButtons().length === 1, "the live voice preview");
 
-    expect(previewButtons().map((button) => button.disabled)).toEqual([
-      !canPreview,
-      !canPreview,
-      !canPreview,
-      !canPreview,
-      !canPreview,
-    ]);
+    expect(previewButtons().map((button) => button.disabled)).toEqual([!canPreview]);
     if (!canPreview) {
       await act(async () => {
         previewButtons().forEach((button) => button.click());
@@ -418,7 +489,7 @@ describe("Character workspace details", () => {
       }
       expect(adminV2Request.mock.calls.filter(([path]) =>
         path === "/api/v2/admin/voice-defaults/preview",
-      )).toHaveLength(5);
+      )).toHaveLength(1);
       expect(container.querySelector('audio[aria-label="System voice preview"]')?.getAttribute("src"))
         .toBe("data:audio/wav;base64,dGVzdA==");
     }
@@ -549,22 +620,23 @@ describe("Character workspace details", () => {
       );
     });
     await waitUntil(
-      () => container.textContent?.includes("Choose where existing images appear") === true,
-      "placements in Images",
+      () => container.querySelector("#character-placement-title") !== null,
+      "display images in Images",
     );
     expect(container.textContent).toContain("All images for Mira");
     const releaseTab = container.querySelector<HTMLButtonElement>("#character-tab-release");
     await act(async () => releaseTab?.click());
     await waitUntil(() => window.location.search === "?tab=release", "release and preview tab");
-    expect(container.textContent).not.toContain("Choose where existing images appear");
+    expect(container.querySelector("#character-placement-title")).toBeNull();
   });
 
   /**
-   * SPEC: An authoritative running command locks system voice defaults before
-   * the journal adopts it and redirects the workspace to Release.
+   * SPEC: An authoritative running command locks the Character voice writes before
+   * the journal adopts it and redirects the workspace to Release. The platform-wide
+   * voice defaults are no longer editable from a Character at all.
    * INTENT: Control these ticks so the Voice assertion cannot miss that frame.
    */
-  it("disables the system voice defaults write while an authoritative command is running", async () => {
+  it("locks the Character voice writes while an authoritative command is running", async () => {
     vi.useFakeTimers();
     window.history.replaceState(
       null,
@@ -605,24 +677,18 @@ describe("Character workspace details", () => {
     // Observe the locked Voice panel before the next tick adopts the command
     // and redirects to Release; wall-clock polling can miss this state.
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(container.textContent).toContain(VOICE_DEFAULTS_READ_ONLY);
+    expect(voicePreviewScript()?.disabled).toBe(true);
     const defaults = container.querySelector('[data-testid="system-voice-defaults"]')!;
     expect(defaults).not.toBeNull();
-    const fields = [...defaults.querySelectorAll<HTMLSelectElement>("select")];
-    expect(fields).toHaveLength(4);
-    expect(fields.every((field) => field.disabled)).toBe(true);
-    const save = [...defaults.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent?.includes("Save system defaults"),
-    );
-    expect(save?.disabled).toBe(true);
-    await act(async () => { save!.click(); });
-    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    expect(defaults.querySelector("select")).toBeNull();
+    expect(container.textContent).not.toContain("Save system defaults");
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST" || options?.method === "PUT")).toBe(false);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(window.location.search).toBe("?tab=release");
     expect(container.querySelector('[id="character-tab-release"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("keeps the system voice defaults write available when no command is running", async () => {
+  it("keeps the Character voice writes available when no command is running", async () => {
     window.history.replaceState(
       null,
       "",
@@ -641,11 +707,13 @@ describe("Character workspace details", () => {
       );
     });
     await waitUntil(
-      () => container.textContent?.includes("Advanced: voice defaults for all characters") === true,
-      "the system voice defaults panel",
+      () => container.querySelector('[data-testid="system-voice-defaults"]') !== null,
+      "the system voice defaults pointer",
     );
 
-    expect(container.textContent).not.toContain(VOICE_DEFAULTS_READ_ONLY);
+    expect(voicePreviewScript()?.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="system-voice-defaults"] a')?.getAttribute("href"))
+      .toBe("/admin/ops/profiles?tab=voice");
   });
 
   it("opens the Video Studio from Recent media operations without leaving the Visual identity panel selected", async () => {
@@ -705,7 +773,7 @@ describe("Character workspace details", () => {
       );
     });
     await waitUntil(
-      () => container.textContent?.includes("Character profile and status") === true,
+      () => container.textContent?.includes("Character profile") === true,
       "Character overview",
     );
     const viewAll = [...container.querySelectorAll("a")].find(

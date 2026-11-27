@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   characterProjectProductionReadyDraftSchema,
   type CharacterProjectCreateRequest,
+  withCharacterVisualDirectionDefaults,
 } from "@idream/shared/admin";
 import type { MediaAsset, Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -22,6 +23,7 @@ import {
   writeCharacterProject,
   type PreparedCharacterProject,
 } from "./creation";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import { characterMediaViewUrl, listCharacterImageSources } from "./image-sources";
 import { getCharacterProjectDraftForResume } from "./project-draft";
 import { characterVisualProfileSnapshotHash } from "./release-snapshot";
@@ -37,7 +39,6 @@ const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const BLOB_COPY_CONCURRENCY = 4;
 const DUPLICATE_NAME_SUFFIX = " (copy)";
 const NAME_MAX_LENGTH = 120;
-const FALLBACK_REFERENCE_DIRECTION = "Soft natural light, head-and-shoulders portrait, clean uncluttered background";
 
 type CopiedImage = {
   readonly source: MediaAsset;
@@ -59,18 +60,29 @@ function duplicateName(name: string) {
   return `${name.slice(0, NAME_MAX_LENGTH - DUPLICATE_NAME_SUFFIX.length)}${DUPLICATE_NAME_SUFFIX}`;
 }
 
+// SPEC: 旧官方角色早于向导的视觉必填项，复制时按向导同一份默认值补齐（shared），绝不拿简介当外貌。
+// INVARIANT: 固定特征只来自源角色已有的外貌信息：缺固定特征但写过一句话外貌时，以那句外貌作为
+//            唯一固定特征（外貌事实，不是编造）；两者都没有才明确拒绝并指向补齐的位置。
 async function duplicateRequest(characterId: string): Promise<CharacterProjectCreateRequest> {
   const { draft } = await getCharacterProjectDraftForResume(characterId);
-  // Older official Characters predate the wizard's required visual fields.
-  const identityAnchor = draft.visualDirection.identityAnchor || draft.persona.characterPromise;
-  const parsed = characterProjectProductionReadyDraftSchema.safeParse({
-    persona: { ...draft.persona, name: duplicateName(draft.persona.name) },
+  const existingTraits = draft.visualDirection.stableTraits.filter((trait) => trait.trim());
+  const anchor = draft.visualDirection.identityAnchor.trim();
+  const visualDirection = withCharacterVisualDirectionDefaults({
+    ...draft,
     visualDirection: {
       ...draft.visualDirection,
-      identityAnchor,
-      stableTraits: draft.visualDirection.stableTraits.length > 0 ? draft.visualDirection.stableTraits : [identityAnchor],
-      referenceDirection: draft.visualDirection.referenceDirection || FALLBACK_REFERENCE_DIRECTION,
+      stableTraits: existingTraits.length > 0 ? existingTraits : anchor ? [anchor] : [],
     },
+  }).visualDirection;
+  if (!visualDirection.stableTraits.some((trait) => trait.trim())) {
+    throw Errors.conflict(
+      "This Character has no features that never change. Add at least one in its Soul settings before copying it.",
+      { reason: "visual_traits_missing", deepLink: characterWorkspaceTabLink(characterId, "soul") },
+    );
+  }
+  const parsed = characterProjectProductionReadyDraftSchema.safeParse({
+    persona: { ...draft.persona, name: duplicateName(draft.persona.name) },
+    visualDirection,
   });
   if (!parsed.success) {
     throw Errors.conflict("This Character is missing required content. Complete it before copying.", {

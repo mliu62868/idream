@@ -130,16 +130,17 @@ describe("Character Portfolio card", () => {
       serving: { ...item.serving, state: "retired" as const, currentReleaseId: null },
       journey: { ...journey("restore_archived_draft", "visual_setup", "/admin/characters/character-1?tab=release"), status: "blocked" as const },
     };
-    expect(characterPortfolioState(archived).label).toBe("Archived");
+    // 归档草稿可恢复，标签必须与永久退役区分开。
+    expect(characterPortfolioState(archived).label).toBe("Archived draft");
     const html = renderToStaticMarkup(<CharacterPortfolioCard canOpenAssets={false} canOpenProject item={archived} />);
-    expect(html).toContain("Archived");
+    expect(html).toContain("Archived draft");
     expect(html).toContain("Restore draft");
     expect(html).not.toContain("Create first identity portrait");
   });
 
   it("keeps retired published and paused characters distinct from a live production journey", () => {
     const retired = { ...item, serving: { ...item.serving, state: "retired" as const, currentReleaseId: "release-1" } };
-    expect(characterPortfolioState(retired).label).toBe("Retired");
+    expect(characterPortfolioState(retired).label).toBe("Retired permanently");
     const paused = { ...item, serving: { ...item.serving, state: "paused" as const }, journey: journey("monitor_live_character", "live_operations", "/admin/characters/character-1?tab=monitor") };
     expect(characterPortfolioState(paused).label).toBe("Paused");
   });

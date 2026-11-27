@@ -105,7 +105,7 @@ GROUP BY status;
 
 通过 `FISH_AUDIO_MODEL_PATH=/path/to/model bun run voice:indextts:install` 预装锁定依赖及模型、W2V-BERT、CAMPPlus。网关启动时离线校验并加载这些文件。参考 WAV 提供声纹条件，转录随声音登记留存。表演预设控制情绪混合，语速使用保音高变速。
 
-切换前先确认没有未完成语音任务，再更新配置，通过 `bun run pm2:restart` 受控重启，并在 Admin 保存匹配当前 provider 的系统默认声音。`FISH_AUDIO_LANGUAGE=auto` 时 IndexTTS 报告其五种语言，固定语言时只报告该语言。Pocket 常驻服务目录和既有角色声音。新 Clip、Call 和旁白记录实际模型。Ming 3.0 0.5B 已退出语音网关，已交付 Clip 从 Main 持久资产重播。Fish S2 Pro 的网关重试只接受精确匹配的缓存。
+切换前先确认没有未完成语音任务，再更新配置，通过 `bun run pm2:restart` 受控重启，并在 Admin「生成配置 → 默认声音」（`/admin/ops/profiles?tab=voice`）保存匹配当前 provider 的系统默认声音。`FISH_AUDIO_LANGUAGE=auto` 时 IndexTTS 报告其五种语言，固定语言时只报告该语言。Pocket 常驻服务目录和既有角色声音。新 Clip、Call 和旁白记录实际模型。Ming 3.0 0.5B 已退出语音网关，已交付 Clip 从 Main 持久资产重播。Fish S2 Pro 的网关重试只接受精确匹配的缓存。
 
 ### Chat
 

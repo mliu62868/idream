@@ -98,8 +98,11 @@ export type CharacterAssetProjectMutation = <T>(input: {
   readonly afterRefresh?: () => void;
 }) => Promise<{ readonly result: T; readonly refreshed: boolean }>;
 
+// SPEC: 角色的三张展示图（display image）。名称、用途说明与「用作…」动作文案都只在这里定义，
+// 头部、图片库、展示图编辑器、发布页一律从这里读；角色内不再用 Cover / Hero / placement 另起名字。
 export const purposeConfig: Record<CharacterAssetPurpose, {
   label: string;
+  actionLabel: string;
   shortLabel: string;
   pluralLabel: string;
   description: string;
@@ -108,6 +111,7 @@ export const purposeConfig: Record<CharacterAssetPurpose, {
 }> = {
   character_cover: {
     label: "Primary portrait",
+    actionLabel: "Use as primary portrait",
     shortLabel: "Portrait",
     pluralLabel: "portrait",
     description: "The face customers recognize across discovery and the character profile.",
@@ -116,6 +120,7 @@ export const purposeConfig: Record<CharacterAssetPurpose, {
   },
   character_hero: {
     label: "Character hero",
+    actionLabel: "Use as character hero",
     shortLabel: "Hero",
     pluralLabel: "hero image",
     description: "A wider, expressive scene for the top of the character experience.",
@@ -124,6 +129,7 @@ export const purposeConfig: Record<CharacterAssetPurpose, {
   },
   character_chat: {
     label: "Chat moments",
+    actionLabel: "Use as chat moment",
     shortLabel: "Chat",
     pluralLabel: "chat image",
     description: "Natural, conversational moments for the chat experience.",

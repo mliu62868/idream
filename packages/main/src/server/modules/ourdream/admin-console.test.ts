@@ -169,7 +169,7 @@ async function readCreativeRunProjection(runId: string) {
   const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
     where: { id: runId },
   });
-  const detail = await getCreativeRunDetail({ runId, actor: { id: "test-projection", role: "admin" } });
+  const detail = await getCreativeRunDetail({ runId, actor: { id: "test-projection", role: "admin" }, characterScope: null });
   return { ...batch, items: detail.items, state: detail };
 }
 

@@ -9,13 +9,11 @@ import {
   type CharacterProjectDraftAuthority,
   type CharacterProjectDraftResume,
 } from "@idream/shared/admin";
-import { CHARACTER_STYLES, GENDERS, isCatalogMember } from "@idream/shared/catalog";
 import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Loader2,
   ShieldAlert,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -25,16 +23,11 @@ import {
   useEffect,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { cn } from "@/lib/utils";
-import {
-  WorkspaceButton,
-  fieldClass,
-  textAreaClass,
-} from "@/features/operations/WorkspaceUi";
+import { WorkspaceButton } from "@/features/operations/WorkspaceUi";
 import {
   claimDurableMutationIntent,
   clearDurableMutationIntent,
@@ -45,201 +38,45 @@ import {
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 import { characterCreateStepFieldErrors } from "./character-form-validation";
 import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
-import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
-import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
-import { apiWrite } from "@/components/admin/api";
 import { CharacterCreatePrefill, CharacterCreateTagPicker } from "./CharacterCreatePrefill";
 import {
   fillEmptyDraftFields,
   withVisualDirectionDefaults,
   type CharacterDraftSuggestion,
 } from "./character-create-prefill";
-
-// INVARIANT: 目录增删一个值，这两张表就编译不过；选项文案不能退回裸枚举值。
-const GENDER_LABELS: Record<(typeof GENDERS)[number], string> = { female: "Female", male: "Male", trans: "Trans" };
-const STYLE_LABELS: Record<(typeof CHARACTER_STYLES)[number], string> = {
-  realistic: "Realistic",
-  anime: "Anime",
-  hybrid: "Hybrid",
-  other: "Other",
-};
+import {
+  characterCreateStepRequirements,
+  characterCreateSteps,
+  clearLocalDraft,
+  draftFromCreateIntent,
+  draftKey,
+  firstIncompleteCharacterCreateStep,
+  initialDraft,
+  isCharacterCreateStepComplete,
+  isRecord,
+  pinDraftToUrl,
+  readLocalDraft,
+  requestedTemplate,
+  saveLocalDraft,
+  tagIdsFromCreateIntent,
+} from "./character-create-draft";
+import {
+  CharacterCreateError,
+  PersonaStep,
+  SaveIndicator,
+  VisualStep,
+  type SaveState,
+} from "./CharacterCreateWizardFields";
 
 type Draft = CharacterProjectDraft;
-type SaveState =
-  | "Not saved"
-  | "Saved locally"
-  | "In memory only"
-  | "Saving"
-  | "Saved"
-  | "Conflict"
-  | "Failed to save";
 type ResumeState =
   "checking" | "restoring" | "restored" | "restore_failed" | "new";
 
 class ReconciledUncommittedCharacter extends Error {}
 
-// SPEC: 创建只问「一个角色之所以是角色」的两件事——它是谁，它长什么样。
-// INTENT: 市场简报、负责人、排期和 QA 计划不影响角色成立，也不参与发布，因此不进入草稿契约。
-export const characterCreateSteps = [
-  "Persona",
-  "Visual direction",
-] as const;
 const steps = characterCreateSteps;
-
-const initialDraft: Draft = {
-  persona: {
-    name: "",
-    age: 18,
-    gender: "female",
-    characterPromise: "",
-    detailsMarkdown: "",
-    firstMessage: "",
-  },
-  visualDirection: {
-    identityAnchor: "",
-    stableTraits: [],
-    style: "realistic",
-    referenceDirection: "",
-  },
-};
-
-// SPEC: 每一句只说这一步真正拦人的东西，不多列一项。
-// INTENT: Soul 只有基本信息与一个可选 Markdown 扩展，不再要求用户拆填人格、语气与示例对话。
-export const characterCreateStepRequirements = [
-  "Give the character a name, short description, and opening message.",
-  "Say who they look like, the features that never change, and the image mood.",
-] as const;
 const stepRequirements = characterCreateStepRequirements;
-
-export function isCharacterCreateStepComplete(draft: Draft, step: number) {
-  if (step === 0) {
-    return characterProjectDraftSchema.shape.persona.safeParse(draft.persona)
-      .success;
-  }
-  if (step === 1) {
-    return characterProjectDraftSchema.shape.visualDirection.safeParse(
-      draft.visualDirection,
-    ).success;
-  }
-  return characterProjectProductionReadyDraftSchema.safeParse(draft).success;
-}
-
-export function firstIncompleteCharacterCreateStep(draft: Draft) {
-  return isCharacterCreateStepComplete(draft, 0) ? 1 : 0;
-}
-
-function localDraftStorageKey(actorId: string) {
-  return `idream.admin.character-create-draft.v3:${actorId}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) && value.every((item) => typeof item === "string")
-  );
-}
-
-function isRecoverableLocalDraft(value: unknown): value is Draft {
-  if (!isRecord(value)) return false;
-  const persona = value.persona;
-  const visualDirection = value.visualDirection;
-  if (!isRecord(persona) || !isRecord(visualDirection)) return false;
-  return (
-    [
-      persona.name,
-      persona.characterPromise,
-      persona.detailsMarkdown,
-      persona.firstMessage,
-      visualDirection.identityAnchor,
-      visualDirection.referenceDirection,
-    ].every((item) => typeof item === "string") &&
-    typeof persona.age === "number" &&
-    isCatalogMember(GENDERS, persona.gender) &&
-    isCatalogMember(CHARACTER_STYLES, visualDirection.style) &&
-    isStringArray(visualDirection.stableTraits)
-  );
-}
-
-function readLocalDraft(actorId: string) {
-  if (typeof window === "undefined" || requestedDraftTarget()) return null;
-  try {
-    const currentRaw = window.localStorage.getItem(
-      localDraftStorageKey(actorId),
-    );
-    if (!currentRaw) return null;
-    const value: unknown = JSON.parse(currentRaw);
-    return isRecoverableLocalDraft(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveLocalDraft(actorId: string, draft: Draft): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const key = localDraftStorageKey(actorId);
-    const serialized = JSON.stringify(draft);
-    window.localStorage.setItem(key, serialized);
-    return window.localStorage.getItem(key) === serialized;
-  } catch {
-    // The in-memory draft remains usable when browser storage is unavailable.
-    return false;
-  }
-}
-
-function clearLocalDraft(actorId: string) {
-  try {
-    window.localStorage.removeItem(localDraftStorageKey(actorId));
-  } catch {
-    // Nothing else is required when browser storage is unavailable.
-  }
-}
-
-function draftKey(value: Draft) {
-  return JSON.stringify(value);
-}
-
-function requestedDraftTarget() {
-  if (typeof window === "undefined") return null;
-  return new URLSearchParams(window.location.search).get("draft");
-}
-
-function pinDraftToUrl(characterId: string) {
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.set("draft", characterId);
-    window.history.replaceState(
-      null,
-      "",
-      `${url.pathname}?${url.searchParams.toString()}`,
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function draftFromCreateIntent(
-  intent: DurableMutationIntent | null,
-): Draft | null {
-  const parsed = characterProjectCreateRequestSchema.safeParse(
-    intent?.requestSnapshot,
-  );
-  if (!parsed.success) return null;
-  return {
-    persona: parsed.data.persona,
-    visualDirection: parsed.data.visualDirection,
-  };
-}
-
-function requestedTemplate() {
-  if (typeof window === "undefined") return null;
-  return new URLSearchParams(window.location.search).get("template");
-}
 
 export function CharacterCreateWizard({
   actorId = "anonymous",
@@ -260,6 +97,7 @@ export function CharacterCreateWizard({
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<Draft>(initialDraft);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [quickSaveMissing, setQuickSaveMissing] = useState<string[] | null>(null);
   const [templateRequest, setTemplateRequest] = useState<string | null>(null);
   const [authority, setAuthority] =
     useState<CharacterProjectDraftAuthority | null>(null);
@@ -283,6 +121,7 @@ export function CharacterCreateWizard({
   const userEditedRef = useRef(false);
   const previousStepRef = useRef(step);
   const latestDraftRef = useRef(draft);
+  const selectedTagIdsRef = useRef(selectedTagIds);
   const { guard } = useUnsavedChanges(
     !createIntent && (authority
       ? draftKey(draft) !== lastSavedKey
@@ -292,6 +131,10 @@ export function CharacterCreateWizard({
   useEffect(() => {
     latestDraftRef.current = draft;
   }, [draft]);
+
+  useEffect(() => {
+    selectedTagIdsRef.current = selectedTagIds;
+  }, [selectedTagIds]);
 
   useEffect(() => {
     if (previousStepRef.current === step) return;
@@ -423,8 +266,11 @@ export function CharacterCreateWizard({
             finishDraftRecovery(resumed.authority.characterId);
             return;
           }
+          // INVARIANT: 标签随创建原子写入；不选标签时请求里没有这个字段，与旧请求逐字节相同。
+          const tagIds = selectedTagIdsRef.current;
           const currentRequest = {
             ...snapshot,
+            ...(tagIds.length > 0 ? { tagIds } : {}),
             reason: {
               code: "character_wizard_started",
               summary: "Create a server-authoritative Character draft",
@@ -469,6 +315,7 @@ export function CharacterCreateWizard({
               const recoveredDraft = draftFromCreateIntent(intent);
               if (recoveredDraft) {
                 setDraft(recoveredDraft);
+                setSelectedTagIds(tagIdsFromCreateIntent(intent));
                 setStep(firstIncompleteCharacterCreateStep(recoveredDraft));
               }
               setCreateIntent(intent);
@@ -651,6 +498,7 @@ export function CharacterCreateWizard({
           (pendingIntent ? null : readLocalDraft(actorId));
         if (recoveredDraft) {
           setDraft(recoveredDraft);
+          setSelectedTagIds(tagIdsFromCreateIntent(pendingIntent));
           setStep(
             pendingIntent
               ? 0
@@ -760,22 +608,7 @@ export function CharacterCreateWizard({
     setFinishing(true);
     try {
       await persist(targetDraft, true);
-      const created = authorityRef.current;
-      const destination = created?.deepLink;
-      if (created && selectedTagIds.length > 0) {
-        try {
-          await apiWrite(
-            `/api/v2/admin/content/characters/${encodeURIComponent(created.characterId)}/tags`,
-            "PUT",
-            { tagIds: selectedTagIds, confirmation: `${created.characterId}:tags` },
-          );
-        } catch {
-          // The Character exists. Retrying only repeats the tag write; clearing the tags continues.
-          setError("The character was saved, but its tags were not. Try again, or clear the tags to continue.");
-          setFinishing(false);
-          return;
-        }
-      }
+      const destination = authorityRef.current?.deepLink;
       if (destination) {
         clearLocalDraft(actorId);
         router.push(destination);
@@ -795,6 +628,7 @@ export function CharacterCreateWizard({
     userEditedRef.current = true;
     setDraft((current) => ({ ...current, [section]: updateSection(current[section]) }));
     setSaveState("Not saved");
+    setQuickSaveMissing(null);
   };
   const applySuggestion = (suggestion: CharacterDraftSuggestion) => {
     const result = fillEmptyDraftFields(latestDraftRef.current, suggestion);
@@ -811,9 +645,33 @@ export function CharacterCreateWizard({
     url.searchParams.delete("template");
     window.history.replaceState(null, "", url.searchParams.size ? `${url.pathname}?${url.searchParams.toString()}` : url.pathname);
   };
-  const quickSaveDraft = step === 0 && !createIntent
-    ? authority ? draft : withVisualDirectionDefaults(draft)
-    : null;
+  // SPEC: 第 1 步的「保存私有草稿」始终在场。点下时人设齐了就用共享默认值补齐视觉字段；
+  //       补齐后仍缺的（通常是固定特征）就地说清楚，而不是让按钮时有时无。
+  // INTENT: 固定特征仍放在第 2 步——它是外貌的一部分，和「一句话外貌」「画面氛围」一起填才说得清；
+  //         挪进人设步只会让第 1 步混进视觉字段。运营要的是可预判，按钮常驻 + 点击即知缺什么就够了。
+  const quickSave = () => {
+    if (!isCharacterCreateStepComplete(draft, 0)) {
+      setQuickSaveMissing(null);
+      setValidationAttemptedStep(0);
+      window.setTimeout(() => wizardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(), 0);
+      return;
+    }
+    // A server draft's fields are the operator's own; only a brand-new draft gets defaults.
+    const target = authority ? draft : withVisualDirectionDefaults(draft);
+    const missing = Object.entries(characterCreateStepFieldErrors(target, 2))
+      .filter(([field]) => Object.hasOwn(target.visualDirection, field))
+      .map(([, message]) => message);
+    if (missing.length > 0) {
+      setQuickSaveMissing(missing);
+      return;
+    }
+    setQuickSaveMissing(null);
+    if (target !== draft) {
+      userEditedRef.current = true;
+      setDraft(target);
+    }
+    void finish(target);
+  };
   const currentLabel = steps[step];
   const fieldErrors =
     validationAttemptedStep === step
@@ -851,6 +709,8 @@ export function CharacterCreateWizard({
     setAuthority(null);
     setCreateIntent(pendingIntent);
     setDraft(draftFromCreateIntent(pendingIntent) ?? initialDraft);
+    setSelectedTagIds(tagIdsFromCreateIntent(pendingIntent));
+    setQuickSaveMissing(null);
     if (!pendingIntent) clearLocalDraft(actorId);
     setStep(0);
     setValidationAttemptedStep(null);
@@ -974,7 +834,14 @@ export function CharacterCreateWizard({
                   </pre>
                 </details>
               </details>
-              {canTag ? <CharacterCreateTagPicker onChange={setSelectedTagIds} selected={selectedTagIds} /> : null}
+              {/* SPEC: 标签只随首次创建原子写入。恢复的服务端草稿已是存在的角色，标签整组替换写入且这里
+                  没有预载现有标签，在此补写会覆盖原有标签；已存在角色的标签统一在「人设 → 目录设置」管理。 */}
+              {canTag && !authority ? <CharacterCreateTagPicker onChange={setSelectedTagIds} selected={selectedTagIds} /> : null}
+              {canTag && authority ? (
+                <p className="text-xs text-[var(--ad-text-muted)]" data-testid="character-create-tags-elsewhere">
+                  {t("This draft already exists. Manage its tags on the Persona tab after saving.")}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </fieldset>
@@ -1088,6 +955,26 @@ export function CharacterCreateWizard({
           <p className="mb-3 text-xs text-[var(--ad-text-muted)]">
             {t(authority ? "Saved changes stay private until you publish the character." : "Save a private draft and continue to the portrait.")}
           </p>
+          {step === 0 && quickSaveMissing ? (
+            <div
+              className="mb-3 rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
+              data-testid="character-create-quick-save-missing"
+              id="character-create-quick-save-missing"
+              role="alert"
+            >
+              <p className="font-semibold">{t("Before saving, the visual direction still needs:")}</p>
+              <ul className="mt-1 list-disc pl-5">
+                {quickSaveMissing.map((message) => <li key={message}>{t(message)}</li>)}
+              </ul>
+              <button
+                className="mt-2 min-h-11 font-medium underline underline-offset-4"
+                onClick={() => void goToStep(1)}
+                type="button"
+              >
+                {t("Add it in visual direction")}
+              </button>
+            </div>
+          ) : null}
           <div className="flex items-center justify-between gap-3">
           <WorkspaceButton
             disabled={step === 0 || navigationLocked}
@@ -1099,13 +986,11 @@ export function CharacterCreateWizard({
           </WorkspaceButton>
           {step < steps.length - 1 ? (
             <div className="flex flex-wrap items-center gap-2">
-              {quickSaveDraft && isCharacterCreateStepComplete(quickSaveDraft, 2) ? (
+              {step === 0 && !createIntent ? (
                 <WorkspaceButton
+                  aria-describedby={quickSaveMissing ? "character-create-quick-save-missing" : undefined}
                   disabled={navigationLocked}
-                  onClick={() => {
-                    setDraft(quickSaveDraft);
-                    void finish(quickSaveDraft);
-                  }}
+                  onClick={quickSave}
                 >
                   <Check className="h-4 w-4" /> {t("Save private draft")}
                 </WorkspaceButton>
@@ -1146,289 +1031,4 @@ export function CharacterCreateWizard({
         </footer>
     </section>
   );
-}
-
-function SaveIndicator({ state }: { state: SaveState }) {
-  const { t } = useAdminI18n();
-  return (
-    <span
-      className="inline-flex min-h-8 items-center gap-2 rounded-md bg-black/[0.04] px-3 text-xs font-semibold"
-      role="status"
-    >
-      {state === "Saving" ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-      ) : state === "Saved" ? (
-        <Check className="h-3.5 w-3.5" />
-      ) : null}
-      {t(state === "Saved" ? "Saved to server" : state)}
-    </span>
-  );
-}
-
-function CharacterCreateError({ error, draftNotResumable }: { error: string | AdminV2RequestError; draftNotResumable: boolean }) {
-  const { t } = useAdminI18n();
-  if (typeof error === "string") return t(error);
-  const copy = operatorErrorCopy(error);
-  return <>
-    <p className="font-semibold">{t(draftNotResumable ? "This character has no resumable creation draft." : copy.headline)}</p>
-    <p className="mt-1">{t(draftNotResumable ? "Open the character settings to continue editing it." : copy.nextStep, copy.nextStepValues)}</p>
-    <RequestErrorDetails technical={copy.technical} />
-  </>;
-}
-
-function Grid({ children }: { children: ReactNode }) {
-  return <div className="grid gap-4 sm:grid-cols-2">{children}</div>;
-}
-
-function Field({
-  error,
-  label,
-  name,
-  value,
-  onChange,
-  placeholder,
-  required = true,
-  type = "text",
-}: {
-  error?: string;
-  label: string;
-  name: string;
-  value: string | number;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  required?: boolean;
-  type?: "text" | "number" | "datetime-local";
-}) {
-  // INTENT: 表单 label 此前直接渲染字面量，绕过了 i18n —— 中文模式下整张创建表单的字段名仍是英文，
-  // 而这些 key 在 zh 词表里本来就有。
-  const { t } = useAdminI18n();
-  const inputId = `character-create-${name.replaceAll(".", "-")}`;
-  const errorId = `${inputId}-error`;
-  return (
-    <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
-      <label htmlFor={inputId}>{t(label)}</label>
-      <input
-        aria-describedby={error ? errorId : undefined}
-        aria-invalid={error ? true : undefined}
-        className={`${fieldClass} mt-1`}
-        id={inputId}
-        max={type === "number" ? 120 : undefined}
-        min={type === "number" ? 18 : undefined}
-        name={name}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        required={required}
-        type={type}
-        value={value}
-      />
-      {error ? (
-        <span
-          className="mt-1 block text-xs font-medium text-[var(--ad-red-text)]"
-          id={errorId}
-        >
-          {t(error)}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function Area({
-  error,
-  hint,
-  label,
-  name,
-  value,
-  onChange,
-  placeholder,
-  required = true,
-}: {
-  error?: string;
-  hint?: string;
-  label: string;
-  name: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  required?: boolean;
-}) {
-  const { t } = useAdminI18n();
-  const inputId = `character-create-${name.replaceAll(".", "-")}`;
-  const errorId = `${inputId}-error`;
-  return (
-    <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
-      <label htmlFor={inputId}>{t(label)}</label>
-      {hint ? <span className="mt-0.5 block font-normal">{t(hint)}</span> : null}
-      <textarea
-        aria-describedby={error ? errorId : undefined}
-        aria-invalid={error ? true : undefined}
-        className={`${textAreaClass} mt-1`}
-        id={inputId}
-        name={name}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        required={required}
-        value={value}
-      />
-      {error ? (
-        <span
-          className="mt-1 block text-xs font-medium text-[var(--ad-red-text)]"
-          id={errorId}
-        >
-          {t(error)}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-type StepProps = {
-  draft: Draft;
-  errors: Record<string, string>;
-  update: <K extends keyof Draft>(section: K, updateSection: (current: Draft[K]) => Draft[K]) => void;
-};
-
-// SPEC: 基本信息与开场白必填；其余角色细节只是一段可选 Markdown。
-function PersonaStep({ draft, errors, update }: StepProps) {
-  const { t } = useAdminI18n();
-  const set = <K extends keyof Draft["persona"]>(
-    field: K,
-    value: Draft["persona"][K],
-  ) => update("persona", (current) => ({ ...current, [field]: value }));
-  return (
-    <div className="space-y-4">
-      <Grid>
-        <Field
-          error={errors.name}
-          label="Name"
-          name="persona.name"
-          onChange={(value) => set("name", value)}
-          placeholder={t("Mara")}
-          value={draft.persona.name}
-        />
-        <Field
-          error={errors.age}
-          label="Age (18+)"
-          name="persona.age"
-          onChange={(value) => set("age", Number(value))}
-          type="number"
-          value={draft.persona.age}
-        />
-        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-          {t("Gender")}
-          <select
-            className={`${fieldClass} mt-1`}
-            onChange={(event) =>
-              set("gender", event.target.value as Draft["persona"]["gender"])
-            }
-            value={draft.persona.gender}
-          >
-            {GENDERS.map((gender) => <option key={gender} value={gender}>{t(GENDER_LABELS[gender])}</option>)}
-          </select>
-        </label>
-      </Grid>
-      <Grid>
-        <Area
-          error={errors.characterPromise}
-          label="Short description"
-          name="persona.characterPromise"
-          onChange={(value) => set("characterPromise", value)}
-          placeholder={t("A precise, warm place to put the day down")}
-          value={draft.persona.characterPromise}
-        />
-        <Area
-          error={errors.firstMessage}
-          label="Opening message"
-          name="persona.firstMessage"
-          onChange={(value) => set("firstMessage", value)}
-          placeholder={t("You made it. What do you need to put down tonight?")}
-          value={draft.persona.firstMessage}
-        />
-      </Grid>
-      <Area
-        error={errors.detailsMarkdown}
-        label="Additional details · Markdown (optional)"
-        name="persona.detailsMarkdown"
-        onChange={(value) => set("detailsMarkdown", value)}
-        placeholder={t(
-          "Write personality, voice, backstory, boundaries, examples, or any other useful context in your own structure.",
-        )}
-        required={false}
-        value={draft.persona.detailsMarkdown}
-      />
-      <p className="text-xs leading-5 text-[var(--ad-text-muted)]">
-        {t(
-          "The basics are rendered into SOUL.md automatically. Additional details are appended as Markdown without another schema.",
-        )}
-      </p>
-    </div>
-  );
-}
-
-function VisualStep({ draft, errors, update }: StepProps) {
-  const { t } = useAdminI18n();
-  // Editing must retain the trailing space/newline needed to type the next word/trait.
-  const [stableTraitsText, setStableTraitsText] = useState(() => draft.visualDirection.stableTraits.join("\n"));
-  const set = <K extends keyof Draft["visualDirection"]>(
-    field: K,
-    value: Draft["visualDirection"][K],
-  ) => update("visualDirection", (current) => ({ ...current, [field]: value }));
-  return (
-    <Grid>
-      <Area
-        error={errors.identityAnchor}
-        hint="Who they look like at a glance. Every generated image starts from this."
-        label="Look in one line"
-        name="visualDirection.identityAnchor"
-        onChange={(value) => set("identityAnchor", value)}
-        placeholder={t("e.g. A composed late-night radio host in her thirties")}
-        value={draft.visualDirection.identityAnchor}
-      />
-      <Area
-        error={errors.stableTraits}
-        hint="What must stay the same in every image, so the character stays recognizable."
-        label="Features that never change (one per line)"
-        name="visualDirection.stableTraits"
-        onChange={(value) => {
-          setStableTraitsText(value);
-          set("stableTraits", lines(value));
-        }}
-        placeholder={t("e.g. Dark wavy hair\nWarm brown eyes\nSmall scar on the left brow")}
-        value={stableTraitsText}
-      />
-      <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-        {t("Visual style")}
-        <select
-          className={`${fieldClass} mt-1`}
-          onChange={(event) =>
-            set(
-              "style",
-              event.target.value as Draft["visualDirection"]["style"],
-            )
-          }
-          value={draft.visualDirection.style}
-        >
-          {CHARACTER_STYLES.map((style) => <option key={style} value={style}>{t(STYLE_LABELS[style])}</option>)}
-        </select>
-      </label>
-      <Area
-        error={errors.referenceDirection}
-        hint="Light, framing and mood of the first portrait."
-        label="Image mood and framing"
-        name="visualDirection.referenceDirection"
-        onChange={(value) => set("referenceDirection", value)}
-        placeholder={t(
-          "e.g. Warm low light, close-up portrait, intimate and quiet",
-        )}
-        value={draft.visualDirection.referenceDirection}
-      />
-    </Grid>
-  );
-}
-
-function lines(value: string) {
-  return value
-    .split("\n")
-    .map((item) => item.trim())
-    .filter(Boolean);
 }

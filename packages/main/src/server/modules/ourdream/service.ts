@@ -60,7 +60,8 @@ import {
   followUser,
   unfollowUser,
 } from "./discovery";
-import { effectivePermissions } from "@/server/admin/effective-permissions";
+import { effectiveCharacterScopes, effectivePermissions } from "@/server/admin/effective-permissions";
+import { characterImageLibraryAsset } from "@/server/modules/admin-v2/characters/image-sources";
 import { resolveCommunityCampaignPlacements } from "./community-campaigns";
 import { currentModerationEffectOwner } from "@/server/modules/admin-v2/moderation/moderation-effect";
 import { listActiveTemplates } from "./character-templates";
@@ -4202,6 +4203,10 @@ async function contentMedia(request: Request, id: string, variant: MediaContentV
     if (!asset) throw Errors.notFound("Media not found");
     return contentMediaAsset(request, asset, variant);
   }
+  const characterScopedAsset = ctx.userId && permissions
+    ? await characterScopedOperatorMediaAsset(ctx.userId, ctx.role, permissions, id)
+    : null;
+  if (characterScopedAsset) return contentMediaAsset(request, characterScopedAsset, variant);
 
   requireAgeGate(ctx);
   const publicAsset = await findPublicReadableMediaAsset(id);
@@ -4210,6 +4215,31 @@ async function contentMedia(request: Request, id: string, variant: MediaContentV
   const user = requireUser(ctx);
   requireAgeVerified(ctx);
   return contentMediaAsset(request, await assertReadableMediaAsset(id, user.id), variant);
+}
+
+// SPEC: 角色级权限包（创作者 / 发布运营）能读被分配角色图库里的图片字节。
+// INTENT: 图库列表（image-sources）要 character.project.read + creative.run.read，且两者都按角色收窄；
+//         图片本身走共享媒体 URL，只认全局的 content.asset.read / creative.asset.read，
+//         于是范围内的运营能列出图却加载不出来。这里用同一对权限、同一个角色范围放行。
+// INVARIANT: 只放行「在其角色运营图库里」的图片（与 image-sources 列表同一成员条件），且该角色
+//            落在两项权限范围交集内。用户私有生成物、未过安全检查的素材即使带同一 characterId 也不放行。
+const CHARACTER_IMAGE_LIBRARY_READ = ["character.project.read", "creative.run.read"] as const;
+
+async function characterScopedOperatorMediaAsset(
+  userId: string,
+  role: Parameters<typeof effectivePermissions>[1],
+  permissions: ReadonlySet<string>,
+  id: string,
+) {
+  if (!CHARACTER_IMAGE_LIBRARY_READ.every((key) => permissions.has(key))) return null;
+  const asset = await characterImageLibraryAsset(id);
+  if (!asset?.characterId) return null;
+  const scopes = await effectiveCharacterScopes(userId, role, [...CHARACTER_IMAGE_LIBRARY_READ]);
+  const inScope = CHARACTER_IMAGE_LIBRARY_READ.every((key) => {
+    const scope = scopes.get(key);
+    return scope === null || (scope !== undefined && scope.has(asset.characterId!));
+  });
+  return inScope ? asset : null;
 }
 
 type MediaContentVariant = "original" | "thumbnail" | "poster";

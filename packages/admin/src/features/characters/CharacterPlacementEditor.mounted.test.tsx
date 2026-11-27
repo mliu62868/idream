@@ -117,7 +117,7 @@ describe("Character placement qualification", () => {
       />));
       await act(async () => container.querySelector("article button")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
-      expect(document.activeElement?.textContent).toContain("Choose Cover image");
+      expect(document.activeElement?.textContent).toContain("Choose image for Primary portrait");
     } finally {
       HTMLElement.prototype.scrollIntoView = original;
     }
@@ -301,7 +301,7 @@ describe("Character placement qualification", () => {
     // The project DTO intentionally has no draftAssetPack entry. Current/used
     // actions must come from the server-owned image qualification projection.
     const coverCard = [...container.querySelectorAll("article")].find(
-      (article) => article.querySelector("h4")?.textContent === "Cover",
+      (article) => article.querySelector("h4")?.textContent === "Primary portrait",
     );
     const replaceButton = [...(coverCard?.querySelectorAll("button") ?? [])].find(
       (button) => button.textContent?.includes("Replace image"),
@@ -318,16 +318,16 @@ describe("Character placement qualification", () => {
     await act(async () => cancelButton?.click());
 
     const heroCard = [...container.querySelectorAll("article")].find(
-      (article) => article.querySelector("h4")?.textContent === "Hero",
+      (article) => article.querySelector("h4")?.textContent === "Character hero",
     );
     const chooseButton = [...(heroCard?.querySelectorAll("button") ?? [])].find(
       (button) => button.textContent?.includes("Choose image"),
     );
     await act(async () => chooseButton?.click());
-    await waitUntil(() => container.textContent?.includes("Used in another placement") === true);
+    await waitUntil(() => container.textContent?.includes("Used for another display image") === true);
 
     const usedButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent?.includes("Used in another placement"),
+      (button) => button.textContent?.includes("Used for another display image"),
     );
     const useButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent?.trim() === "Use image",

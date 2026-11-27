@@ -31,8 +31,7 @@ describe("Character workspace permission derivation", () => {
   /**
    * SPEC: durable command 待决期间，**每一个**写能力都必须是 false。
    * INVARIANT: 断言遍历键集而不是逐条列出——曾经的写入锁是 8 条手写的 `&& !writesLocked`，
-   *            漏掉的 manageVoiceDefaults 让「保存系统语音默认」在待决期间仍然可点，运营
-   *            点下去拿到的是一个抛出的错误而不是禁用态。
+   *            漏掉的一项让写按钮在待决期间仍然可点，运营点下去拿到的是一个抛出的错误而不是禁用态。
    */
   it("locks every write capability while a durable command is pending", () => {
     const permissions = characterWorkspacePermissions(granted, true);
@@ -46,6 +45,14 @@ describe("Character workspace permission derivation", () => {
     expect(permissions.readImages).toBe(true);
     expect(permissions.readVideos).toBe(true);
     expect(permissions.readProduction).toBe(true);
+  });
+
+  // SPEC: 全平台默认声音不是角色级写入，角色工作区不再派生它（编辑入口在平台配置页）。
+  it("does not derive a platform-wide voice-defaults capability for one Character", () => {
+    const permissions = characterWorkspacePermissions(new Set([...granted, "generation.config.write"]), false);
+
+    expect(Object.values(CHARACTER_WORKSPACE_WRITES)).not.toContain("generation.config.write");
+    expect(permissions).not.toHaveProperty("manageVoiceDefaults");
   });
 
   it("denies the workspace read unless every permission the read operation declares is held", () => {
@@ -74,5 +81,24 @@ describe("Character workspace permission derivation", () => {
     expect(permissions.read).toBe(true);
     expect(permissions.readImages).toBe(readImages);
     expect(permissions.readVideos).toBe(readVideos);
+  });
+
+  // SPEC: 每个角色级权限包单独授予时，图片 tab 的本职动作都可用；发布运营看不到生图。
+  it.each([
+    { bundle: "character_creator", createAssets: true, writeVisual: true, publishRelease: false, manageFeatured: false },
+    { bundle: "character_producer", createAssets: true, writeVisual: true, publishRelease: true, manageFeatured: false },
+    { bundle: "character_publisher", createAssets: false, writeVisual: false, publishRelease: true, manageFeatured: true },
+  ] as const)("lets $bundle alone run its Images tab chain", ({ bundle, ...expected }) => {
+    const permissions = characterWorkspacePermissions(
+      resolveAdminPermissions({ role: "user", grantBundles: [bundle] }),
+      false,
+    );
+
+    expect(permissions.read).toBe(true);
+    expect(permissions.readImages).toBe(true);
+    expect(permissions.readProduction).toBe(true);
+    // Choosing a display slot needs project authorship, which every Character bundle keeps.
+    expect(permissions.writeProject).toBe(true);
+    expect(permissions).toMatchObject(expected);
   });
 });

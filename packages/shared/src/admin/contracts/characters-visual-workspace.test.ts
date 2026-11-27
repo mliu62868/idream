@@ -124,6 +124,9 @@ describe("Character Visual workspace contract", () => {
         completedSampleCount: 1,
         windowDays: 7,
       },
+      imageGenerationEstimates: [
+        { profileKey: "profile_image_default_v1", perItemCostDreamcoins: 14 },
+      ],
       activeReferenceSet: null,
       routeQualifications: [],
       routeEvaluation: {
@@ -164,6 +167,9 @@ describe("Character Visual workspace contract", () => {
       estimatedCostDreamcoins: 100,
       averageDurationMs: 785_800,
     });
+    expect(result.imageGenerationEstimates).toEqual([
+      { profileKey: "profile_image_default_v1", perItemCostDreamcoins: 14 },
+    ]);
   });
 
   it("rejects a readiness claim without explicit evidence collections", () => {

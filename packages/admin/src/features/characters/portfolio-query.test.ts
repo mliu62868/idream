@@ -16,7 +16,7 @@ describe("Character Portfolio URL authority", () => {
     );
     expect(restored).toEqual({
       search: "aurora sky",
-      servingState: "paused",
+      lifecycle: "paused",
       cursor: "opaque",
     });
     expect(characterPortfolioEmptyView({ ...restored, search: "" })).toBe("filtered");
@@ -74,8 +74,24 @@ describe("Character Portfolio URL authority", () => {
     const all = characterPortfolioRequestParams({ search: "" });
     expect(all.get("excludeArchived")).toBe("true");
     expect(all.get("includeFacets")).toBe("true");
-    expect(characterPortfolioRequestParams({ search: "", servingState: "retired" }).has("excludeArchived")).toBe(false);
+    expect(characterPortfolioRequestParams({ search: "", lifecycle: "archived" }).has("excludeArchived")).toBe(false);
+    expect(characterPortfolioRequestParams({ search: "", lifecycle: "retired" }).has("excludeArchived")).toBe(false);
+    expect(characterPortfolioRequestParams({ search: "", lifecycle: "draft" }).get("excludeArchived")).toBe("true");
     expect(characterPortfolioQuery({ search: "" })).toBe("");
+  });
+
+  // SPEC: 「归档草稿（可恢复）」与「已退役（永久）」是两个视图；旧书签 ?servingState=retired
+  //       是当年的「Archived」视图，按其意图映射为归档草稿。
+  it("separates archived drafts from retired Characters and keeps old bookmarks working", () => {
+    expect(parseCharacterPortfolioUrl("?lifecycle=retired").lifecycle).toBe("retired");
+    expect(parseCharacterPortfolioUrl("?lifecycle=archived").lifecycle).toBe("archived");
+    expect(parseCharacterPortfolioUrl("?servingState=retired").lifecycle).toBe("archived");
+    expect(parseCharacterPortfolioUrl("?servingState=inactive").lifecycle).toBe("draft");
+    // 新参数优先于旧参数。
+    expect(parseCharacterPortfolioUrl("?lifecycle=retired&servingState=retired").lifecycle).toBe("retired");
+    expect(parseCharacterPortfolioUrl("?lifecycle=bogus").lifecycle).toBeUndefined();
+    expect(characterPortfolioQuery({ search: "", lifecycle: "retired" })).toBe("lifecycle=retired");
+    expect(characterPortfolioQuery(parseCharacterPortfolioUrl("?servingState=retired"))).toBe("lifecycle=archived");
   });
 
   it("does not claim a work queue is clear when an extra search hides its rows", () => {

@@ -21,24 +21,15 @@ import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { CharacterAssetStudio } from "./CharacterAssetStudio";
 import type { CharacterAssetProjectMutation } from "./character-asset-studio-authority";
 import { CharacterChatLibrary, type CharacterChatLibrarySource } from "./CharacterChatLibrary";
+import { chatPackImageProfiles } from "./chat-pack-options";
 import { operatorReasonOrDefault, CHARACTER_LIBRARY_ARCHIVE_DEFAULT_REASON } from "./character-library-archive";
-import { characterAssetPurposeLabel, characterAssetPurposes, type CharacterAssetPurpose } from "./character-asset-studio-authority";
+import { characterAssetPurposeLabel, characterAssetPurposes, purposeConfig, type CharacterAssetPurpose } from "./character-asset-studio-authority";
 import { draftImageSelectionFrozen, useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const BULK_ARCHIVE_LIMIT = 100;
 // The server names files it did not receive a name for; such a name says nothing.
 const GENERIC_FILENAME = /^image-source\.[a-z0-9]+$/i;
-const PLACEMENT_LABELS: Record<CharacterAssetPurpose, string> = {
-  character_cover: "Cover",
-  character_hero: "Hero",
-  character_chat: "Chat",
-};
-const PLACEMENT_ACTION_LABELS: Record<CharacterAssetPurpose, string> = {
-  character_cover: "Use as cover",
-  character_hero: "Use as hero",
-  character_chat: "Use as chat image",
-};
 
 type CharacterImageLibraryProps = {
   actorId: string;
@@ -89,8 +80,10 @@ export function CharacterImageLibrary({
   );
   const { completed, total, missingPurposes } = data.journey.assetPack.draft;
   const incomplete = completed < total && !draftImageSelectionFrozen(data);
+  // SPEC: 没有生图权限的人（发布运营）只在有进行中的生成时打开创作区查看进度，
+  //       不会因为「还没有身份」被带进一个只能看到禁用生图按钮的创作区。
   const [generatorOpen, setGeneratorOpen] = useState(() =>
-    (canReadProduction && canCreate && incomplete) || data.visual.identityBootstrap.allowed || Boolean(activeImage) || Boolean(
+    (canReadProduction && canCreate && incomplete) || (canCreate && data.visual.identityBootstrap.allowed) || Boolean(activeImage) || Boolean(
       readActiveDurableMutationIntent({ scope: `character-asset:create:${actorId}:${data.character.id}` }) ??
       readActiveDurableMutationIntent({ scope: `character-asset:selection:${actorId}:${data.character.id}` }),
     ),
@@ -220,8 +213,8 @@ export function CharacterImageLibrary({
         },
       );
       setMessage(t(data.visual.identityBootstrap.allowed
-        ? "Image imported. Establish an identity to use it in a display placement."
-        : "Image imported. Choose a display placement."));
+        ? "Image imported. Establish an identity to use it as a display image."
+        : "Image imported. Choose which display image it fills."));
       await loadAssets();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Image import failed"));
@@ -237,8 +230,8 @@ export function CharacterImageLibrary({
     setArchiveSpec({
       title: single ? "Remove image from library?" : t("Remove {count} images from the library?", { count: assetIds.length }),
       summary: single
-        ? t("Images used as the cover, hero or chat image must be replaced first.")
-        : t("If any of these images is in use, none will be removed. Replace it in its placement first."),
+        ? t("An image used as a display image must be replaced first.")
+        : t("If any of these images is in use, none will be removed. Replace it as a display image first."),
       consequence: {
         effect: single ? "The image will be archived and hidden from this Character's library." : "These images will be archived and hidden from this Character's library.",
         reversible: false,
@@ -262,8 +255,8 @@ export function CharacterImageLibrary({
           const blocker = assetArchiveBlocker(cause);
           if (blocker?.kind === "dependency" && blocker.dependencies.length > 0) {
             throw new Error(t(single
-              ? "Replace this image in its display placement before removing it."
-              : "At least one of these images is in use, so none were removed. Replace it in its display placement first."));
+              ? "Replace this display image before removing it."
+              : "At least one of these images is in use as a display image, so none were removed. Replace it first."));
           }
           throw cause;
         }
@@ -340,28 +333,35 @@ export function CharacterImageLibrary({
             </p>
             <h3 className="mt-1 text-xl font-semibold">{t("All images for {name}", { name: data.character.name })}</h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-              {t("Create or import images for this Character’s display placements.")}
+              {t("Create or import images for this Character’s display images.")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <input
-              accept="image/jpeg,image/png,image/webp"
-              aria-label={t("Import image")}
-              className="sr-only"
-              onChange={(event) => void upload(event)}
-              ref={inputRef}
-              type="file"
-            />
-            {!incomplete ? (
-              <WorkspaceButton disabled={!canCreate || uploading} onClick={() => inputRef.current?.click()}>
+            {/* INTENT: 隐藏的文件框也是可聚焦的「Import image」按钮；没有上传权限的人（发布运营）
+                不能看到一个点了也什么都不做的入口。 */}
+            {canCreate ? (
+              <input
+                accept="image/jpeg,image/png,image/webp"
+                aria-label={t("Import image")}
+                className="sr-only"
+                onChange={(event) => void upload(event)}
+                ref={inputRef}
+                type="file"
+              />
+            ) : null}
+            {!incomplete && canCreate ? (
+              <WorkspaceButton disabled={uploading} onClick={() => inputRef.current?.click()}>
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 {t("Import image")}
               </WorkspaceButton>
             ) : null}
-            <WorkspaceButton disabled={!canReadProduction || (!canCreate && !activeImage)} onClick={() => setGeneratorOpen((open) => !open)} tone="primary">
-              {showGenerator ? <X className="h-4 w-4" /> : <WandSparkles className="h-4 w-4" />}
-              {t(showGenerator ? "Close creator" : activeImage ? "View generation" : "Create images")}
-            </WorkspaceButton>
+            {/* SPEC: 生图入口只给有 creative.run.write 的人；只读者仅在有进行中的生成时能查看。 */}
+            {canCreate || activeImage || showGenerator ? (
+              <WorkspaceButton disabled={!canReadProduction} onClick={() => setGeneratorOpen((open) => !open)} tone="primary">
+                {showGenerator ? <X className="h-4 w-4" /> : <WandSparkles className="h-4 w-4" />}
+                {t(showGenerator ? "Close creator" : activeImage ? "View generation" : "Create images")}
+              </WorkspaceButton>
+            ) : null}
           </div>
         </div>
         <label className="relative mt-5 block max-w-md">
@@ -419,7 +419,7 @@ export function CharacterImageLibrary({
               canPublish={canPublish}
               source={chatSource}
               onCloseSource={() => setChatSource(null)}
-              defaultProfileId={data.visual.routeQualifications.find(route => route.result === "qualified" && !route.stale)?.generationProfileKey ?? undefined}
+              packProfiles={chatPackImageProfiles(data)}
             />
           </div>
         </details>
@@ -480,8 +480,8 @@ export function CharacterImageLibrary({
                   {usedIn.length > 0 ? (
                     <p className="mt-2 flex flex-wrap items-center gap-1 text-xs font-semibold text-[var(--ad-green-text)]" data-testid="image-placements">
                       <Check aria-hidden="true" className="h-3.5 w-3.5" />
-                      {t("Used as {placements}", {
-                        placements: usedIn.filter(isPlacementPurpose).map((purpose) => t(PLACEMENT_LABELS[purpose])).join(" · "),
+                      {t("Used as {slots}", {
+                        slots: usedIn.filter(isPlacementPurpose).map((purpose) => t(purposeConfig[purpose].label)).join(" · "),
                       })}
                     </p>
                   ) : null}
@@ -505,7 +505,7 @@ export function CharacterImageLibrary({
                           onClick={() => void placeAsset(purpose, asset)}
                           type="button"
                         >
-                          {t(PLACEMENT_ACTION_LABELS[purpose])}
+                          {t(purposeConfig[purpose].actionLabel)}
                         </button>
                       ))}
                     </div>

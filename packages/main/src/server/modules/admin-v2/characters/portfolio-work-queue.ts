@@ -42,18 +42,17 @@ export async function workQueueCharacterIds(
         )
       )
     `),
-    // SPEC: 当前 Release 或候选 stale/blocked。legacy 不算受阻：线上照常，卡片上提示可重新发布即可。
+    // SPEC: 只看当前 Release stale/blocked。legacy 不算受阻：线上照常，卡片上提示可重新发布即可。
+    // INTENT: 候选不进这个队列。发布校验失败现在会当场撤回候选；历史遗留的 approved + blocked
+    //         候选仍由 candidate_unpublished 收（处置是放弃候选），一个角色只进一个队列。
     db.$queryRaw<Array<{ characterId: string }>>(Prisma.sql`
       SELECT DISTINCT p."characterId"
       FROM "character_projects" p
       JOIN "character_serving" s ON s."characterId" = p."characterId"
-      JOIN "character_releases" release ON release."projectId" = p.id
+      JOIN "character_releases" release ON release.id = s."currentReleaseId"
       WHERE s.state <> 'retired'
+        AND release."projectId" = p.id
         AND release.readiness IN ('stale', 'blocked')
-        AND (
-          release.id = s."currentReleaseId"
-          OR (release.status = 'approved' AND release.id IS DISTINCT FROM s."currentReleaseId")
-        )
     `),
   ]);
   const journeys = await projectCharacterProductionJourneys(
@@ -61,11 +60,11 @@ export async function workQueueCharacterIds(
     candidates.map((row) => row.characterId),
     asOf,
   );
-  const publishBlocked = new Set(unhealthy.map((row) => row.characterId));
+  const currentReleaseUnhealthy = new Set(unhealthy.map((row) => row.characterId));
   const queues = {
     pending_changes: new Set<string>(),
     candidate_unpublished: new Set<string>(),
-    publish_blocked: publishBlocked,
+    publish_blocked: new Set<string>(),
     recent_generation_failed: new Set<string>(),
     ready_to_publish: new Set<string>(),
   };
@@ -79,8 +78,15 @@ export async function workQueueCharacterIds(
     if (journey.imageRunNeedsAttention) {
       queues.recent_generation_failed.add(characterId);
     }
-    if (journey.status === "ready" && !publishBlocked.has(characterId)) {
+    if (journey.status === "ready" && !currentReleaseUnhealthy.has(characterId)) {
       queues.ready_to_publish.add(characterId);
+    }
+  }
+  // INVARIANT: candidate_unpublished 与 publish_blocked 互斥。有候选时处置是发布或放弃这个候选
+  //            （发布本身会重验并替换当前 Release），不是另一条「修复当前 Release」的路。
+  for (const characterId of currentReleaseUnhealthy) {
+    if (!queues.candidate_unpublished.has(characterId)) {
+      queues.publish_blocked.add(characterId);
     }
   }
   return queues;

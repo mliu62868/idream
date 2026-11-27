@@ -26,6 +26,7 @@ import {
   findBootstrapGenerationProfile,
   findIdentityCalibrationGenerationProfiles,
   findRouteEvaluationGenerationProfiles,
+  loadCharacterImageGenerationEstimates,
   loadCharacterVideoGenerationEstimate,
 } from "./workspace-generation-profiles";
 import {
@@ -180,7 +181,7 @@ export async function loadCharacterVisualWorkspace(input: {
     : routeQualifications;
   const qualificationProfileKey = (profileKey: string, version: number) =>
     `${profileKey}\u0000${version}`;
-  const [workflowEntries, routeProfiles] = await Promise.all([
+  const [workflowEntries, routeProfiles, imageGenerationEstimates] = await Promise.all([
     Promise.all([...new Set(projectedRouteQualifications.map((qualification) => qualification.workflowKey))]
       .map(async (workflowKey) => {
         const descriptor = await generationWorkflowDescriptor(workflowKey);
@@ -201,6 +202,13 @@ export async function loadCharacterVisualWorkspace(input: {
           },
         })
       : Promise.resolve([]),
+    // The manual image form submits either the bootstrap profile or a qualified route's profile.
+    loadCharacterImageGenerationEstimates([
+      ...(bootstrapProfile ? [bootstrapProfile.profileKey] : []),
+      ...projectedRouteQualifications
+        .filter((qualification) => qualification.result === "qualified")
+        .map((qualification) => qualification.generationProfileKey),
+    ]),
   ]);
   const workflowByKey = new Map(workflowEntries);
   const routeProfileByKey = new Map(routeProfiles.map((profile) => [
@@ -388,6 +396,7 @@ export async function loadCharacterVisualWorkspace(input: {
       videoSourceAssetDto(asset, characterId)
     ),
     videoGenerationEstimate,
+    imageGenerationEstimates,
     activeReferenceSet: activeReferenceSet ? {
       id: activeReferenceSet.id,
       revision: activeReferenceSet.revision,

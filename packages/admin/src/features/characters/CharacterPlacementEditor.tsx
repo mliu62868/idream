@@ -17,16 +17,11 @@ import { adminV2Operation } from "@/lib/admin-v2-operation";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
 import { CandidateDiscardAction } from "./CandidateDiscardAction";
 import { draftImageSelectionFrozen, useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
+import { characterAssetPurposes, purposeConfig, type CharacterAssetPurpose } from "./character-asset-studio-authority";
 
 const SEARCH_DEBOUNCE_MS = 300;
 
-const placements = [
-  { purpose: "character_cover", label: "Cover", description: "Character cards and primary portrait", aspect: "aspect-[4/5]" },
-  { purpose: "character_hero", label: "Hero", description: "Character detail hero image", aspect: "aspect-[16/9]" },
-  { purpose: "character_chat", label: "Chat", description: "Conversation scene image", aspect: "aspect-[4/5]" },
-] as const;
-
-type PlacementPurpose = (typeof placements)[number]["purpose"];
+type PlacementPurpose = CharacterAssetPurpose;
 
 export function CharacterPlacementEditor({
   actorId = "anonymous",
@@ -141,9 +136,9 @@ export function CharacterPlacementEditor({
   return (
     <section className="mb-5 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5" aria-labelledby="character-placement-title">
       <div>
-        <h3 className="mt-1 text-xl font-semibold" id="character-placement-title">{t("Choose where existing images appear")}</h3>
+        <h3 className="mt-1 text-xl font-semibold" id="character-placement-title">{t("Display images")}</h3>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-          {t("Each placement uses an image from this Character's library below.")}
+          {t("Each display image uses an image from this Character's library below.")}
         </p>
       </div>
       {candidatePending ? (
@@ -154,18 +149,19 @@ export function CharacterPlacementEditor({
         </div>
       ) : null}
       <div className="mt-4 grid gap-3 lg:grid-cols-3">
-        {placements.map((placement) => {
-          const slot = data.preview.draft.assetPack[placement.purpose];
+        {characterAssetPurposes.map((purpose) => {
+          const display = purposeConfig[purpose];
+          const slot = data.preview.draft.assetPack[purpose];
           return (
             <article
               className="flex scroll-mt-24 items-center gap-3 overflow-hidden rounded-lg border border-[var(--ad-border)] p-3"
-              id={`character-image-placement-${placement.purpose}`}
-              key={placement.purpose}
+              id={`character-image-placement-${purpose}`}
+              key={purpose}
             >
               <div className="relative grid h-20 w-16 shrink-0 place-items-center overflow-hidden rounded-md bg-black/[0.04]">
                 {slot.imageUrl ? (
                   <Image
-                    alt={t("{name} {placement}", { name: data.character.name, placement: t(placement.label) })}
+                    alt={t("{name} {slot}", { name: data.character.name, slot: t(display.label) })}
                     className="object-cover"
                     fill
                     sizes="64px"
@@ -178,13 +174,13 @@ export function CharacterPlacementEditor({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  <h4 className="truncate text-sm font-semibold">{t(placement.label)}</h4>
+                  <h4 className="truncate text-sm font-semibold">{t(display.label)}</h4>
                   <span className={`shrink-0 text-xs font-semibold ${slot.status === "available" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"}`}>
                     {t(slot.status === "available" ? "Selected" : "Missing")}
                   </span>
                 </div>
-                <p className="mt-0.5 truncate text-xs text-[var(--ad-text-muted)]">{t(placement.description)}</p>
-                <WorkspaceButton className="mt-2 min-h-8 px-2.5 text-xs" disabled={!canRead || !canWrite || candidatePending} onClick={() => openChooser(placement.purpose)}>
+                <p className="mt-0.5 truncate text-xs text-[var(--ad-text-muted)]">{t(display.description)}</p>
+                <WorkspaceButton className="mt-2 min-h-8 px-2.5 text-xs" disabled={!canRead || !canWrite || candidatePending} onClick={() => openChooser(purpose)}>
                   <Replace className="h-3.5 w-3.5" /> {t(slot.assetId ? "Replace image" : "Choose image")}
                 </WorkspaceButton>
               </div>
@@ -196,7 +192,7 @@ export function CharacterPlacementEditor({
       {choosing ? (
         <div className="mt-5 border-t border-[var(--ad-border)] pt-5" aria-live="polite">
           <div className="flex items-center justify-between gap-3">
-            <h4 className="font-semibold focus:outline-none" ref={chooserHeading} tabIndex={-1}>{t("Choose {placement} image", { placement: t(placements.find((item) => item.purpose === choosing)?.label ?? choosing) })}</h4>
+            <h4 className="font-semibold focus:outline-none" ref={chooserHeading} tabIndex={-1}>{t("Choose image for {slot}", { slot: t(purposeConfig[choosing].label) })}</h4>
             <button className="min-h-10 text-sm font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" onClick={() => setChoosing(null)} type="button">{t("Cancel")}</button>
           </div>
           <label className="relative mt-3 block max-w-md">
@@ -252,7 +248,7 @@ export function CharacterPlacementEditor({
                 );
                 return (
                   <button
-                    aria-label={t("Use image for {placement}", { placement: t(choosing) })}
+                    aria-label={t("Use image for {slot}", { slot: t(purposeConfig[choosing].label) })}
                     className="overflow-hidden rounded-lg border border-[var(--ad-border)] text-left disabled:cursor-not-allowed disabled:opacity-40"
                     disabled={
                       !canWrite ||
@@ -276,7 +272,7 @@ export function CharacterPlacementEditor({
                           : current
                             ? "Current"
                             : usedElsewhere
-                              ? "Used in another placement"
+                              ? "Used for another display image"
                               : "Use image",
                       )}
                     </span>

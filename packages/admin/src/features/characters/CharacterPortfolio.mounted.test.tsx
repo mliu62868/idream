@@ -26,7 +26,7 @@ const item = (id: string, name: string, state: string) => ({
   serving: { ...baseItem.serving, characterId: id, state, version: 4 },
 });
 const counts = {
-  all: 3, draft: 1, live: 2, paused: 0, archived: 5, attention: 1, live_asset_pack_incomplete: 0,
+  all: 3, draft: 1, live: 2, paused: 0, archived: 5, retired: 6, attention: 1, live_asset_pack_incomplete: 0,
   pending_changes: 2, candidate_unpublished: 0, publish_blocked: 0, recent_generation_failed: 4, ready_to_publish: 0,
 };
 
@@ -99,17 +99,23 @@ describe("Character list work queues and bulk actions", () => {
     const firstQuery = new URLSearchParams(adminV2Operation.mock.calls[0][1].query);
     expect(firstQuery.get("excludeArchived")).toBe("true");
     expect(firstQuery.get("includeFacets")).toBe("true");
-    expect(button("Archived")?.textContent).toContain("5");
+    expect(button("Archived drafts")?.textContent).toContain("5");
+    expect(button("Retired")?.textContent).toContain("6");
     expect(button("Generation failed")?.textContent).toContain("4");
     await act(async () => button("Generation failed")?.click());
     await settle(() => container.textContent?.includes("Rae") === true);
     const portfolioCalls = adminV2Operation.mock.calls.filter(([id]) => id === "GET /api/v2/admin/characters/portfolio");
     expect(new URLSearchParams(portfolioCalls.at(-1)?.[1].query).get("workQueue")).toBe("recent_generation_failed");
     expect(window.location.search).toContain("workQueue=recent_generation_failed");
-    await act(async () => button("Archived")?.click());
-    const lastQuery = new URLSearchParams(adminV2Operation.mock.calls.filter(([id]) => id === "GET /api/v2/admin/characters/portfolio").at(-1)?.[1].query);
-    expect(lastQuery.get("servingState")).toBe("retired");
-    expect(lastQuery.has("excludeArchived")).toBe(false);
+    await act(async () => button("Archived drafts")?.click());
+    const portfolioQuery = () => new URLSearchParams(adminV2Operation.mock.calls.filter(([id]) => id === "GET /api/v2/admin/characters/portfolio").at(-1)?.[1].query);
+    expect(portfolioQuery().get("lifecycle")).toBe("archived");
+    expect(portfolioQuery().has("servingState")).toBe(false);
+    expect(portfolioQuery().has("excludeArchived")).toBe(false);
+    // 已退役是单独的视图：不可恢复，与归档草稿分开。
+    await act(async () => button("Retired")?.click());
+    expect(portfolioQuery().get("lifecycle")).toBe("retired");
+    expect(portfolioQuery().has("excludeArchived")).toBe(false);
   });
 
   it("keeps the filtered roster, tab, and anchor on table navigation", async () => {

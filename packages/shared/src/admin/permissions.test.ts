@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_GRANT_BUNDLES,
+  adminGrantBundlePermissionIsCharacterScoped,
   adminGrantBundleRequiresCharacterScope,
   ADMIN_PERMISSION_KEYS,
   ADMIN_ROLE_PERMISSION_SCOPES,
@@ -61,11 +62,57 @@ describe("Admin v2 permission contract", () => {
       "character.project.write",
       "character.release.publish",
       "character.release.read",
+      "content.official.write",
+      "creative.run.read",
+      "creative.run.write",
     ]);
     for (const bundle of ["character_producer", "character_creator", "character_publisher"] as const) {
       expect(adminGrantBundleRequiresCharacterScope(bundle)).toBe(true);
     }
     expect(adminGrantBundleRequiresCharacterScope("growth_operator")).toBe(false);
+  });
+
+  // SPEC: 每个角色级权限包都要能独立走完本职链路，且只在被分配的角色上生效。
+  it("lets every Character bundle finish its own chain without leaving the assigned Characters", () => {
+    const allowed = (bundle: "character_producer" | "character_creator" | "character_publisher", operationId: string) => {
+      const operation = ADMIN_V2_API_OPERATIONS.find(({ id }) => id === operationId);
+      if (!operation || operation.authorization.kind !== "all_of") throw new Error(`Expected all_of ${operationId}`);
+      const granted = expandAdminGrantBundles([bundle]);
+      return operation.authorization.permissions.every((permission) => granted.has(permission));
+    };
+    const imageLibrary = "GET /api/v2/admin/characters/:id/image-sources";
+    const createRun = "POST /api/v2/admin/creative/runs";
+    const uploadImage = "POST /api/v2/admin/characters/:id/image-sources";
+    const visualIdentity = "POST /api/v2/admin/content/characters/:id/visual-profiles";
+    const referenceSet = "POST /api/v2/admin/characters/:id/reference-sets";
+    const archiveLook = "PATCH /api/v2/admin/characters/:id/looks/:lookId";
+    const featured = "PUT /api/v2/admin/content/featured";
+
+    for (const operation of [imageLibrary, createRun, uploadImage, visualIdentity, referenceSet, archiveLook]) {
+      expect(allowed("character_creator", operation)).toBe(true);
+      expect(allowed("character_producer", operation)).toBe(true);
+    }
+    expect(expandAdminGrantBundles(["character_creator"])).not.toContain("character.release.publish");
+    expect(expandAdminGrantBundles(["character_producer"])).toContain("character.release.publish");
+    for (const permission of expandAdminGrantBundles(["character_creator"])) {
+      expect(expandAdminGrantBundles(["character_producer"])).toContain(permission);
+    }
+
+    expect(allowed("character_publisher", imageLibrary)).toBe(true);
+    expect(allowed("character_publisher", featured)).toBe(true);
+    expect(allowed("character_publisher", createRun)).toBe(false);
+    expect(allowed("character_publisher", uploadImage)).toBe(false);
+
+    // Every new right is Character-scoped; only the publisher's storefront-wide Featured rights are global.
+    for (const bundle of ["character_producer", "character_creator"] as const) {
+      for (const permission of ADMIN_GRANT_BUNDLES[bundle].permissions) {
+        expect(adminGrantBundlePermissionIsCharacterScoped(bundle, permission)).toBe(true);
+      }
+    }
+    expect(adminGrantBundlePermissionIsCharacterScoped("character_publisher", "creative.run.read")).toBe(true);
+    expect(adminGrantBundlePermissionIsCharacterScoped("character_publisher", "content.featured.write")).toBe(false);
+    expect(adminGrantBundlePermissionIsCharacterScoped("character_publisher", "content.read")).toBe(false);
+    expect(adminGrantBundlePermissionIsCharacterScoped("creative_operator", "creative.run.write")).toBe(false);
   });
 
   // SPEC: 精选写权限是 content.featured.write：增长运营能用，且不因此拿到下架权或展示位发布权。

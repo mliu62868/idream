@@ -1,6 +1,9 @@
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { getCreativeRunDetail } from "@/server/modules/admin-v2/creative/run-read";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import {
+  actorCharacterScope,
+  actorWithPermission,
+} from "@/server/modules/admin-v2/shared/authority";
 import { creativeRunDetailSchema } from "@idream/shared/admin";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +14,9 @@ type Context = { params: Promise<{ id: string }> };
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(request, async () => {
-    const actor = await actorWithPermission(request, "creative.run.read");
-    return creativeRunDetailSchema.parse(await getCreativeRunDetail({ runId: id, actor }));
+    // INVARIANT: getCreativeRunDetail refuses a Run whose Character is outside this scope.
+    const actor = await actorWithPermission(request, "creative.run.read", { characterScope: "handler_enforced" });
+    const characterScope = await actorCharacterScope(actor, "creative.run.read");
+    return creativeRunDetailSchema.parse(await getCreativeRunDetail({ runId: id, actor, characterScope }));
   });
 }

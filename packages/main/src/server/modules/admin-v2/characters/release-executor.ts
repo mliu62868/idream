@@ -196,32 +196,39 @@ async function failCommand(
   await finishAttempt(tx, command, "failed", now, errorBody);
 }
 
-async function appendExecutionEvidence(
+interface ReleaseEvidenceInput {
+  command: {
+    id: string;
+    actorId: string;
+    requestPayload: Prisma.JsonValue;
+    requestHash: string;
+    requestId: string;
+    attemptCount: number;
+  };
+  releaseId: string | null;
+  characterId: string;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  eventType: string;
+  /** Audit action; executed commands use `${commandType}.executed`. */
+  auditAction: string;
+  /** Overrides the operator reason when the system, not the operator, made the change. */
+  reason?: string;
+  now: Date;
+  result: Record<string, unknown>;
+}
+
+// SPEC: Release 事件、审计与 outbox 三件套。命令成功与「失败但系统已代为撤回候选」都走这里，
+//       两条路径的证据形状一致，审计页不需要区分来源就能读懂。
+async function appendReleaseEvidence(
   tx: Prisma.TransactionClient,
-  input: {
-    command: {
-      id: string;
-      actorId: string;
-      requestPayload: Prisma.JsonValue;
-      requestHash: string;
-      requestId: string;
-      attemptCount: number;
-    };
-    commandType: ReleaseCommandType;
-    releaseId: string | null;
-    characterId: string;
-    before: Record<string, unknown>;
-    after: Record<string, unknown>;
-    eventType: string;
-    now: Date;
-    result: Record<string, unknown>;
-  },
+  input: ReleaseEvidenceInput,
 ) {
   const actor = await tx.user.findUnique({
     where: { id: input.command.actorId },
     select: { role: true },
   });
-  const reason = reasonFromPayload(input.command.requestPayload);
+  const reason = input.reason ?? reasonFromPayload(input.command.requestPayload);
   if (input.releaseId) await tx.characterReleaseEvent.create({
     data: {
       releaseId: input.releaseId,
@@ -243,7 +250,7 @@ async function appendExecutionEvidence(
     data: {
       actorId: input.command.actorId,
       actorRole: actor?.role ?? "unknown",
-      action: `${input.commandType}.executed`,
+      action: input.auditAction,
       targetType: input.releaseId ? "character_release" : "character_serving",
       targetId: input.releaseId ?? input.characterId,
       reason,
@@ -266,6 +273,19 @@ async function appendExecutionEvidence(
       }),
     },
   });
+}
+
+async function appendExecutionEvidence(
+  tx: Prisma.TransactionClient,
+  input: Omit<ReleaseEvidenceInput, "auditAction"> & {
+    commandType: ReleaseCommandType;
+  },
+) {
+  const { commandType, ...evidence } = input;
+  await appendReleaseEvidence(tx, {
+    ...evidence,
+    auditAction: `${commandType}.executed`,
+  });
   await transitionControlPlaneCommand(tx, {
     commandId: input.command.id,
     to: "succeeded",
@@ -284,6 +304,84 @@ async function appendExecutionEvidence(
     },
   });
   await finishAttempt(tx, input.command, "succeeded", input.now);
+}
+
+/**
+ * SPEC: 发布时发现候选本身不可能上线（固定快照校验失败 / 投影不完整），在同一事务里把候选转为
+ *       withdrawn，草稿随即解冻；命令仍记为 failed，blockers 与 validationRunId 留在失败证据里。
+ * INTENT: 候选存在的唯一理由是「预览并确认的内容就是上线的内容」。它的快照不可变，校验失败后
+ *         重试同一个候选只会再失败一次，继续冻结草稿只会逼运营先去找「放弃候选」才能修。
+ * INVARIANT: 只撤回尚未上线的候选：status=approved、从未 publishedAt、且不是 Serving 当前指针。
+ *            当前 Serving 的 Release 永远不经过这里；守卫不成立时退回旧行为，只标 blocked。
+ *            环境性失败（版本/Serving 冲突、Serving 缺失）不撤回：那些与候选内容无关，可重试。
+ */
+async function withdrawUnpublishableCandidate(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly command: ReleaseCommandRow;
+    readonly release: { id: string; status: string; version: number; publishedAt: Date | null; readiness: string };
+    readonly characterId: string;
+    readonly failureCode: string;
+    readonly evidence: Record<string, unknown>;
+    readonly now: Date;
+  },
+): Promise<{ candidateWithdrawn: boolean; withdrawnReleaseId: string | null }> {
+  const { release } = input;
+  const serving = await tx.characterServing.findUnique({
+    where: { characterId: input.characterId },
+    select: { currentReleaseId: true },
+  });
+  if (
+    release.status !== "approved" ||
+    release.publishedAt !== null ||
+    serving?.currentReleaseId === release.id
+  ) {
+    await tx.characterRelease.update({
+      where: { id: release.id },
+      data: { readiness: "blocked" },
+    });
+    return { candidateWithdrawn: false, withdrawnReleaseId: null };
+  }
+  await transitionCharacterRelease(tx, {
+    releaseId: release.id,
+    to: "withdrawn",
+    expectedVersion: release.version,
+    data: { readiness: "blocked" },
+    conflict: () =>
+      new ReleaseCommandError(
+        "release_version_conflict",
+        "Candidate Release changed before it could be withdrawn",
+        { releaseId: release.id },
+        true,
+      ),
+  });
+  await appendReleaseEvidence(tx, {
+    command: input.command,
+    releaseId: release.id,
+    characterId: input.characterId,
+    before: { releaseStatus: release.status, releaseVersion: release.version, readiness: release.readiness },
+    // INVARIANT: 自动撤回在事件里自带「自动 + 失败码 + 阻塞项」，工作区据此告诉运营上次为何没发出去；
+    //            人工撤回没有这几个字段，不会被误认成发布失败。
+    after: {
+      releaseStatus: "withdrawn",
+      releaseVersion: release.version + 1,
+      readiness: "blocked",
+      automatic: true,
+      failureCode: input.failureCode,
+      blockers: Array.isArray(input.evidence.blockers) ? input.evidence.blockers : [],
+    },
+    eventType: "character.release.withdrawn",
+    auditAction: "character.release.withdraw.automatic",
+    reason: `Automatic withdrawal: ${input.failureCode}`,
+    now: input.now,
+    result: {
+      withdrawn: true,
+      automatic: true,
+      failureCode: input.failureCode,
+      ...input.evidence,
+    },
+  });
+  return { candidateWithdrawn: true, withdrawnReleaseId: release.id };
 }
 
 async function publishRelease(
@@ -323,18 +421,44 @@ async function publishRelease(
     now,
   );
   if (validation.failed.length > 0) {
-    await tx.characterRelease.update({
-      where: { id: release.id },
-      data: { readiness: "blocked" },
+    const evidence = {
+      blockers: validation.failed.map((item) => item.key),
+      validationRunId: validation.run.id,
+    };
+    const withdrawal = await withdrawUnpublishableCandidate(tx, {
+      command,
+      release,
+      characterId,
+      failureCode: "release_validation_failed",
+      evidence,
+      now,
     });
     throw new ReleaseCommandError(
       "release_validation_failed",
       "Release validation failed",
-      {
-        blockers: validation.failed.map((item) => item.key),
-        validationRunId: validation.run.id,
-      },
+      { ...evidence, ...withdrawal },
     );
+  }
+  // Derive the serving projection before any write: a pinned snapshot that cannot
+  // project is a candidate defect exactly like a failed check, not a mid-publish fault.
+  let projection: ReturnType<typeof releasedCharacterProjection>;
+  try {
+    projection = releasedCharacterProjection(validation.content!);
+  } catch (error) {
+    if (!(error instanceof ReleaseCommandError)) throw error;
+    const withdrawal = await withdrawUnpublishableCandidate(tx, {
+      command,
+      release,
+      characterId,
+      failureCode: error.code,
+      evidence: { ...error.evidence, validationRunId: validation.run.id },
+      now,
+    });
+    throw new ReleaseCommandError(error.code, error.message, {
+      ...error.evidence,
+      validationRunId: validation.run.id,
+      ...withdrawal,
+    });
   }
   const serving = await tx.characterServing.findUnique({
     where: { characterId },
@@ -426,7 +550,7 @@ async function publishRelease(
     characterId,
     state: "live",
     avatarAssetId: validation.avatarAssetId,
-    content: releasedCharacterProjection(validation.content!),
+    content: projection,
   });
   // Keep the write order compatible with databases that still have the
   // original statement-time qualification trigger: the Release assets and

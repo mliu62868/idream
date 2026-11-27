@@ -1,22 +1,27 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  CHARACTER_WORKSPACE_TABS,
   characterWorkspaceAreaForTab,
   characterWorkspaceAreaLabel,
   characterWorkspaceAreaTabs,
   characterWorkspaceTabLabel,
 } from "./CharacterWorkspace";
-import { characterWorkspaceTabFromSearch } from "@/features/image-workflow-transport";
+import {
+  characterWorkspaceTabFromSearch,
+  characterWorkspaceTabs,
+} from "@/features/image-workflow-transport";
 
-const workspaceSource = readFileSync(
-  new URL("./CharacterWorkspace.tsx", import.meta.url),
-  "utf8",
-);
+const workspaceSource = ["./CharacterWorkspace.tsx", "./CharacterWorkspaceNav.tsx"]
+  .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+  .join("\n");
 
 describe("Character production entry", () => {
 
   it("uses operator-facing tab labels instead of raw route keys", () => {
     expect(characterWorkspaceTabLabel("project")).toBe("Overview");
+    expect(characterWorkspaceTabLabel("soul")).toBe("Persona");
+    expect(characterWorkspaceTabLabel("visual")).toBe("Appearance & identity");
     expect(characterWorkspaceTabLabel("assets")).toBe("Images");
     expect(characterWorkspaceTabLabel("video")).toBe("Videos");
     expect(characterWorkspaceTabLabel("voice")).toBe("Voice");
@@ -25,39 +30,36 @@ describe("Character production entry", () => {
     expect(characterWorkspaceTabLabel("monitor")).toBe("Live monitoring");
   });
 
-  it("groups the existing deep links into settings, assets, and operations", () => {
-    expect(characterWorkspaceAreaLabel("settings")).toBe("Character settings");
-    expect(characterWorkspaceAreaLabel("assets")).toBe("Character assets");
-    expect(characterWorkspaceAreaLabel("operations")).toBe("Character operations");
-    expect(characterWorkspaceAreaTabs.settings).toEqual([
-      "project",
-      "soul",
-      "visual",
-      "voice",
+  // SPEC: 导航按 概览 ｜ 设定 ｜ 素材 ｜ 上线 分组渲染，旧 ?tab= 值与别名照旧解析。
+  it("groups every existing deep link into overview, setup, assets, and go-live", () => {
+    expect(characterWorkspaceAreaLabel("overview")).toBe("Overview");
+    expect(characterWorkspaceAreaLabel("settings")).toBe("Setup");
+    expect(characterWorkspaceAreaLabel("assets")).toBe("Assets");
+    expect(characterWorkspaceAreaLabel("launch")).toBe("Go live");
+    expect(characterWorkspaceAreaTabs).toEqual({
+      overview: ["project"],
+      settings: ["soul", "visual", "voice"],
+      assets: ["assets", "video"],
+      launch: ["release", "monitor"],
+    });
+    expect(CHARACTER_WORKSPACE_TABS).toEqual([
+      "project", "soul", "visual", "voice", "assets", "video", "release", "monitor",
     ]);
-    expect(characterWorkspaceAreaTabs.assets).toEqual(["assets", "video"]);
-    expect(characterWorkspaceAreaTabs.operations).toEqual([
-      "release",
-      "monitor",
-    ]);
+    expect([...CHARACTER_WORKSPACE_TABS].sort()).toEqual([...characterWorkspaceTabs].sort());
+    expect(characterWorkspaceAreaForTab("project")).toBe("overview");
     expect(characterWorkspaceAreaForTab("visual")).toBe("settings");
     expect(characterWorkspaceAreaForTab("video")).toBe("assets");
-    expect(characterWorkspaceAreaForTab("release")).toBe("operations");
+    expect(characterWorkspaceAreaForTab("release")).toBe("launch");
   });
 
-  it("renders a single flat tab bar on desktop and one compact mobile page selector", () => {
+  it("renders the grouped tab bar on desktop and a grouped mobile page selector", () => {
     expect(workspaceSource).not.toContain("<CharacterJourneyRail");
-    expect(workspaceSource).toContain("ALL_WORKSPACE_TABS");
+    expect(workspaceSource).not.toContain("ALL_WORKSPACE_TABS");
     expect(workspaceSource).toContain('aria-label={t("Workspace page")}');
     expect(workspaceSource).toContain('className="mt-4 block sm:hidden"');
+    expect(workspaceSource).toContain("<optgroup");
     expect(workspaceSource).toContain(
-      'className="mt-4 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"',
+      'className="mt-4 hidden items-end overflow-x-auto border-b border-[var(--ad-border)] sm:flex"',
     );
   });
-
-
-
 });
-
-// SPEC: 工作台顶部必须直接说清角色线上状态；以前只有折叠的「技术状态」，运营开页看不出
-// 一个 live 角色和一个草稿角色的区别。

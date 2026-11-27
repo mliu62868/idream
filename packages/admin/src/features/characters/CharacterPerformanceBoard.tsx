@@ -17,7 +17,7 @@ import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { adminV2Operation, adminV2OperationAllowed } from "@/lib/admin-v2-operation";
 import { useAuthorityResource } from "@/lib/authority-resource";
 import { cn } from "@/lib/utils";
-import { submitServingCommand } from "./character-bulk-operations";
+import { submitCharacterServingCommand } from "./release-command";
 import { permissionDenied } from "./character-permission-denied";
 import {
   CHARACTER_RECOMMENDATION_LABELS,
@@ -159,10 +159,11 @@ export function CharacterPerformanceBoard({
       return next;
     });
     try {
-      await submitServingCommand({
+      await submitCharacterServingCommand({
         characterId: item.characterId,
         action: item.serving.state === "paused" ? "resume" : "pause",
         entityVersion: item.serving.version,
+        servingState: item.serving.state,
       });
     } catch (cause) {
       setRowErrors((current) => ({

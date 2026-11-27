@@ -200,8 +200,13 @@ describe("Release historical image authority", () => {
         status: "failed", errorCode: "release_validation_failed",
       });
       expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId } })).toEqual(serving);
-      expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: release.id } })).toMatchObject({ status: "approved", readiness: "blocked", publishedAt: null });
+      // SPEC: 不可能上线的候选在同一事务里撤回，草稿不再被冻结；失败证据保留 blockers 与 validationRunId。
+      expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: release.id } })).toMatchObject({ status: "withdrawn", readiness: "blocked", publishedAt: null });
       const validationRun = await prisma.releaseValidationRun.findFirstOrThrow({ where: { releaseId: release.id } });
+      expect((await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: accepted.commandId } })).error).toMatchObject({
+        code: "release_validation_failed", blockers: ["soul_release_policy"], validationRunId: validationRun.id,
+        candidateWithdrawn: true, withdrawnReleaseId: release.id,
+      });
       expect(await prisma.releaseCheckResult.findFirstOrThrow({ where: {
         validationRunId: validationRun.id, checkKey: "soul_release_policy",
       } })).toMatchObject({ result: "failed", evidence: expectedEvidence });

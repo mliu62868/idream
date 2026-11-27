@@ -504,6 +504,61 @@ describe("Character Asset Studio bootstrap route projection", () => {
       expect(posted.every((body) => body.count === 1 && !body.runCount && body.fillMissing === true && String(body.brief).length > 0)).toBe(true);
     });
 
+    it("shows Main's per-image price before submit and follows the image count", async () => {
+      adminV2Request.mockImplementation(async (path) => {
+        if (path.includes("/image-sources?")) return { items: [], nextCursor: null };
+        if (path.includes("/api/v2/admin/creative/runs?")) return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      const pricedData = (imageGenerationEstimates: CharacterWorkspaceDetail["visual"]["imageGenerationEstimates"]) =>
+        withCharacterWorkspaceDetail(missingData(), { visual: { imageGenerationEstimates } });
+      const renderPriced = async (
+        imageGenerationEstimates: CharacterWorkspaceDetail["visual"]["imageGenerationEstimates"],
+        locale?: "zh",
+      ) => {
+        const studio = <CharacterAssetStudio
+          actorId="operator-priced"
+          data={pricedData(imageGenerationEstimates)}
+          permissions={{ read: true, create: true, selectDraft: true }}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+        />;
+        await act(async () => root.render(locale ? <AdminI18nProvider locale={locale}>{studio}</AdminI18nProvider> : studio));
+        await waitUntil(() => Boolean(container.querySelector('[data-testid="generate-missing-images"]')));
+      };
+      const button = (label: string) => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+      const manual = () => container.querySelector('[data-testid="character-image-cost-estimate-manual"]')?.textContent ?? null;
+      const missing = () => container.querySelector('[data-testid="character-image-cost-estimate-missing"]')?.textContent ?? null;
+      const estimates = [{ profileKey: routeQualification().generationProfileKey, perItemCostDreamcoins: 14 }];
+
+      await renderPriced(estimates);
+      expect(manual()).toBe("Estimated cost: 14 DC");
+      await act(async () => button("2")!.click());
+      expect(manual()).toBe("Estimated cost: 14 DC × 2 images = 28 DC");
+      expect(button("Generate 2 images")).toBeDefined();
+      await act(async () => button("4")!.click());
+      expect(manual()).toBe("Estimated cost: 14 DC × 4 images = 56 DC");
+      // Two placements are still missing; each is a count=1 Run on the same route.
+      expect(missing()).toBe("Estimated cost: up to 28 DC (14 DC × 2 images). Placements that are skipped are not charged.");
+
+      await act(async () => root.render(null));
+      await renderPriced(estimates, "zh");
+      await act(async () => button("2")!.click());
+      expect(manual()).toBe("预计消耗：14 梦币 × 2 张 = 28 梦币");
+      expect(missing()).toBe("预计消耗：最多 28 梦币（14 梦币 × 2 张）。被跳过的展示位不计费。");
+
+      // Without a price from Main nothing is shown, rather than a guessed number.
+      await act(async () => root.render(null));
+      for (const unavailable of [undefined, [], [{ profileKey: "another-profile", perItemCostDreamcoins: 3 }]]) {
+        await renderPriced(unavailable);
+        expect(manual()).toBeNull();
+        expect(missing()).toBeNull();
+        await act(async () => root.render(null));
+      }
+      expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    });
+
     it("handles Main's pending Run receipt without polling the skipped slot", async () => {
       const posted: Record<string, unknown>[] = [];
       adminV2Request.mockImplementation(async (path, options) => {

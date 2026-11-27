@@ -12,12 +12,13 @@ import {
   type AdminV2RequestContractRef,
 } from "@idream/shared/admin/api-manifest";
 import { requireExecutableAdminV2Contract } from "@idream/shared/admin";
-import type { PermissionKey } from "@/server/admin/permissions";
+import { resolvePermissions, type PermissionKey } from "@/server/admin/permissions";
 import {
   canCreateCharacterProjects,
   effectiveCharacterIdsForPermission,
+  effectiveCharacterScopes,
   effectivePermissions,
-  userHasPermission,
+  type CharacterScope,
 } from "@/server/admin/effective-permissions";
 import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
 import { Errors } from "@/server/lib/errors";
@@ -40,11 +41,23 @@ export async function authenticatedAdminActor(
   return { id: user.id, role: user.role };
 }
 
+/**
+ * SPEC: 一次授权要核对的资源。
+ * - `characterId`：请求作用在这个角色上。所需的每一个权限都必须在它的角色范围内。
+ * - `characterScope: "handler_enforced"`：请求不点名角色，但 handler 自己把结果收窄到
+ *   `actorCharacterScope(...)`（或返回的根本不是角色数据）。只有这样声明过，范围受限的
+ *   非 `character.*` 授权才会在没有 characterId 时放行。
+ */
+export type AdminPermissionResource = {
+  readonly characterId?: string;
+  readonly characterScope?: "handler_enforced";
+};
+
 export async function requireActorPermission(
   request: Request,
   actor: AdminActor,
   permission: PermissionKey,
-  resource?: { readonly characterId?: string },
+  resource?: AdminPermissionResource,
 ): Promise<AdminActor> {
   const effective = await effectivePermissions(actor.id, actor.role);
   const pathname = new URL(request.url).pathname;
@@ -68,29 +81,82 @@ export async function requireActorPermission(
   if (missingPermission) {
     throw Errors.forbidden("Missing admin permission", { permission: missingPermission });
   }
-  if (resource?.characterId && permission.startsWith("character.")) {
-    const allowedCharacterIds = await effectiveCharacterIdsForPermission(
-      actor.id,
-      actor.role,
-      permission,
-    );
-    if (allowedCharacterIds !== null && !allowedCharacterIds.has(resource.characterId)) {
-      throw Errors.forbidden("Character is outside the effective permission scope", {
-        permission,
-        characterId: resource.characterId,
-      });
-    }
-  }
+  await assertCharacterScope(actor, requiredPermissions, resource);
   return actor;
+}
+
+/**
+ * SPEC: 角色范围对所有权限一视同仁，不再只看 `character.*` 前缀。
+ * INVARIANTS:
+ *   - 点名了角色：每一个所需权限的范围都必须包含它。
+ *   - 没点名角色：范围受限的非 `character.*` 权限默认拒绝，除非 handler 声明自己收窄结果。
+ *     `character.*` 保持原有语义 —— 它们没有 characterId 的入口（作品集、列表）自己按范围过滤。
+ *   - 全局授予（role / override / 全局包）范围为 null，行为与之前完全一样。
+ *   - 拒绝的 details 总带 `characterId` 键：Admin 据此把它当「按资源拒绝」而不是权限被收回。
+ */
+async function assertCharacterScope(
+  actor: AdminActor,
+  permissions: readonly PermissionKey[],
+  resource: AdminPermissionResource | undefined,
+) {
+  // Fast path: permissions the actor's role grants are global by construction (a revoke would have
+  // removed them from the effective set checked just before), so no scope lookup can narrow them.
+  const roleGrants = resolvePermissions(actor.role as ActorRole);
+  if (permissions.every((permission) => roleGrants.has(permission))) return;
+  const scopes = await effectiveCharacterScopes(actor.id, actor.role, permissions);
+  for (const permission of permissions) {
+    const allowed = scopes.has(permission) ? scopes.get(permission)! : new Set<string>();
+    if (allowed === null) continue;
+    if (resource?.characterId) {
+      if (!allowed.has(resource.characterId)) {
+        throw Errors.forbidden("Character is outside the effective permission scope", {
+          permission,
+          characterId: resource.characterId,
+        });
+      }
+      continue;
+    }
+    if (permission.startsWith("character.")) continue;
+    if (resource?.characterScope === "handler_enforced") continue;
+    throw Errors.forbidden("Permission is limited to assigned Characters and this request names none", {
+      permission,
+      characterId: null,
+    });
+  }
 }
 
 export async function actorWithPermission(
   request: Request,
   permission: PermissionKey,
-  resource?: { readonly characterId?: string },
+  resource?: AdminPermissionResource,
 ): Promise<AdminActor> {
   const actor = await authenticatedAdminActor(request);
   return requireActorPermission(request, actor, permission, resource);
+}
+
+/** SPEC: the Character ids `permission` reaches for this actor; null = every Character. */
+export function actorCharacterScope(
+  actor: AdminActor,
+  permission: PermissionKey,
+): Promise<CharacterScope> {
+  return effectiveCharacterIdsForPermission(actor.id, actor.role, permission);
+}
+
+/**
+ * SPEC: a scoped actor reaching a resource that belongs to no assigned Character is a 403
+ *       with the same shape as the authority seam's own scope rejection.
+ */
+export function assertCharacterInScope(
+  scope: CharacterScope,
+  permission: PermissionKey,
+  characterId: string | null,
+) {
+  if (scope === null) return;
+  if (characterId !== null && scope.has(characterId)) return;
+  throw Errors.forbidden("Character is outside the effective permission scope", {
+    permission,
+    characterId,
+  });
 }
 
 /**
@@ -102,7 +168,12 @@ export async function actorForCharacterCreationAid(
   contentPermission: PermissionKey,
 ): Promise<AdminActor> {
   const actor = await authenticatedAdminActor(request);
-  if (await userHasPermission(actor.id, actor.role, contentPermission)) {
+  // INTENT: 只有全局持有的内容权限能走内容入口；角色级授予（创作者 / 生产者的
+  //         content.official.write）与范围受限的 producer 一样不开放创建辅助。
+  if (
+    (await effectivePermissions(actor.id, actor.role)).has(contentPermission) &&
+    await effectiveCharacterIdsForPermission(actor.id, actor.role, contentPermission) === null
+  ) {
     return requireActorPermission(request, actor, contentPermission);
   }
   if (!await canCreateCharacterProjects(actor.id, actor.role)) {

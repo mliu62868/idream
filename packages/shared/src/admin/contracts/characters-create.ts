@@ -8,6 +8,7 @@ import {
   adminIsoDateTimeSchema,
 } from "./common";
 import { characterServingStateSchema } from "./characters-common";
+import { characterTagIdsSchema } from "./content";
 
 export const characterDraftPersonaSchema = z
   .object({
@@ -112,9 +113,45 @@ export const characterProjectProductionReadyDraftSchema =
     rejectCharacterCreateInstructionalSentinels,
   );
 
+// SPEC: 视觉方向的默认值只有这一份：向导、批量导入与复制共用。
+// INVARIANT: 外貌只从已有视觉信息补齐——「一句话外貌」退到第一条固定特征，绝不用剧情简介；
+//            固定特征没有默认值，缺了就是缺了，由草稿校验如实报告。
+export const CHARACTER_DEFAULT_REFERENCE_DIRECTION =
+  "Soft natural light, head-and-shoulders portrait, clean uncluttered background";
+
+export function withCharacterVisualDirectionDefaults<
+  Draft extends {
+    readonly visualDirection: {
+      readonly identityAnchor: string;
+      readonly stableTraits: readonly string[];
+      readonly referenceDirection: string;
+    };
+  },
+>(draft: Draft): Draft {
+  const { visualDirection } = draft;
+  const identityAnchor = visualDirection.identityAnchor.trim()
+    ? visualDirection.identityAnchor
+    : visualDirection.stableTraits.find((trait) => trait.trim())?.trim() ?? "";
+  const referenceDirection = visualDirection.referenceDirection.trim()
+    ? visualDirection.referenceDirection
+    : CHARACTER_DEFAULT_REFERENCE_DIRECTION;
+  if (
+    identityAnchor === visualDirection.identityAnchor &&
+    referenceDirection === visualDirection.referenceDirection
+  )
+    return draft;
+  return {
+    ...draft,
+    visualDirection: { ...visualDirection, identityAnchor, referenceDirection },
+  };
+}
+
 export const characterProjectCreateRequestSchema =
   characterProjectDraftObjectSchema
     .extend({
+      // SPEC: 创建时一并挂载的标签，与 PUT /content/characters/:id/tags 同一份上限，随创建原子写入。
+      // INVARIANT: 不带标签的请求与旧请求逐字节相同，requestHash 不变。
+      tagIds: characterTagIdsSchema.optional(),
       reason: adminCommandReasonSchema,
       confirmation: z.literal("CREATE CHARACTER"),
     })

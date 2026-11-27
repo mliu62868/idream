@@ -300,6 +300,7 @@ const base = {
   serving: null,
   activeCommand: null,
   releases: [],
+  lastFailedPublish: null,
   preview: {
     live: null,
     draft: {

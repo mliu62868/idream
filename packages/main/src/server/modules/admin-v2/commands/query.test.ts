@@ -53,7 +53,8 @@ describe("Admin v2 command status query", () => {
     });
     await prisma.adminUserPermission.createMany({
       data: [...readerIdByPermission].flatMap(([permissionKey, readerId]) =>
-        ["dashboard.read", permissionKey].map((grantedPermission) => ({
+        // Only the target read permission: command status is authorized by its target alone.
+        [permissionKey].map((grantedPermission) => ({
           userId: readerId,
           permissionKey: grantedPermission,
           effect: "grant",
@@ -192,9 +193,7 @@ describe("Admin v2 command status query", () => {
       await prisma.user.create({
         data: { id: producerId, email: `${producerId}@example.test`, role: "user", status: "active" },
       });
-      await prisma.adminUserPermission.create({
-        data: { userId: producerId, permissionKey: "dashboard.read", effect: "grant", reason: "scope test", createdById: adminId },
-      });
+      // The bundle alone: Character bundles carry no dashboard.read and must still read their own commands.
       await prisma.adminUserGrantBundle.create({
         data: {
           userId: producerId,

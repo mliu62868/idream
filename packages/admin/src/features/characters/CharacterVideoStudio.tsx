@@ -17,9 +17,9 @@ import {
   Sparkles,
   Video,
 } from "lucide-react";
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { GenerationRunFailure } from "@/components/admin/generation/GenerationRunFailure";
 import { formatDreamcoins, formatDuration } from "@/components/admin/ui/format";
 import {
   StatusBadge,
@@ -37,6 +37,10 @@ import {
 import { useAuthorityResource } from "@/lib/authority-resource";
 import { isProjectionRequestCancellation } from "@/lib/committed-projection";
 import { createOrRecoverCharacterRun } from "./creative-run-creation";
+import { characterVideoSourceOptions } from "./character-video-sources";
+
+// Existing callers import the source derivation from the Studio.
+export { characterVideoSourceOptions };
 import { cn } from "@/lib/utils";
 
 type CharacterVideoPermissions = {
@@ -53,62 +57,6 @@ export type RunCommittedMutation = <T>(input: {
 type CharacterVideoCreateRequest = ReturnType<
   typeof creativeRunCreateRequestSchema.parse
 >;
-
-type CharacterVideoSourceOption = {
-  readonly assetId: string;
-  readonly label: string;
-  readonly labelValues?: Readonly<Record<string, string | number>>;
-  readonly url: string;
-  readonly thumbnailUrl: string | null;
-};
-
-const adoptedSourceLabels = {
-  character_cover: "Primary portrait",
-  character_hero: "Character hero",
-  character_chat: "Chat moment",
-} as const;
-
-export function characterVideoSourceOptions(
-  data: Pick<CharacterWorkspaceDetail, "project" | "visual">,
-): readonly CharacterVideoSourceOption[] {
-  const assets = new Map(
-    [
-      ...data.visual.videoSources,
-      ...data.visual.anchors,
-      ...data.visual.references,
-    ]
-      .filter((asset) => asset.available && asset.url)
-      .map((asset) => [asset.mediaAssetId, asset] as const),
-  );
-  const options: CharacterVideoSourceOption[] = [];
-  const used = new Set<string>();
-  for (const purpose of Object.keys(adoptedSourceLabels) as Array<
-    keyof typeof adoptedSourceLabels
-  >) {
-    const assetId = data.project.draftAssetPack[purpose];
-    const asset = assetId ? assets.get(assetId) : undefined;
-    if (!asset || !asset.url || used.has(asset.mediaAssetId)) continue;
-    used.add(asset.mediaAssetId);
-    options.push({
-      assetId: asset.mediaAssetId,
-      label: adoptedSourceLabels[purpose],
-      url: asset.url,
-      thumbnailUrl: asset.thumbnailUrl,
-    });
-  }
-  for (const asset of assets.values()) {
-    if (!asset.url || used.has(asset.mediaAssetId)) continue;
-    used.add(asset.mediaAssetId);
-    options.push({
-      assetId: asset.mediaAssetId,
-      label: "Character image {id}",
-      labelValues: { id: options.length + 1 },
-      url: asset.url,
-      thumbnailUrl: asset.thumbnailUrl,
-    });
-  }
-  return options;
-}
 
 function videoExecutionLabel(item: CreativeRunDetail["items"][number] | null) {
   if (!item) return "Waiting for generation details";
@@ -703,28 +651,17 @@ export function CharacterVideoStudio({
                         ) : null}
                       </div>
                     ) : null}
-                    {/* SPEC: 失败要说原因，并给出真正能重跑的去处。
-                        INTENT: 契约的 failure.operatorGuidance / errorCode 此前只有视觉实验台读；
-                        重试是 CreativeRunWorkspace 那台带幂等键的持久命令机，不在这里复制第二份。 */}
+                    {/* SPEC: 失败与图片候选同一种说法：翻译后的原因在首屏，errorCode / 服务端原文折进技术详情。
+                        INTENT: 重试是 CreativeRunWorkspace 那台带落盘幂等键的持久命令机，不在这里复制第二份；
+                        所以这里明说为什么要跳过去，以及「换个输入」可以直接在右侧重新生成。 */}
                     {selectedItem.executionState === "failed" ? (
-                      <div className="mt-3 text-xs" role="alert">
-                        {selectedItem.failure ? (
-                          <>
-                            <p className="leading-5 text-[var(--ad-red-text)]">
-                              {selectedItem.failure.operatorGuidance}
-                            </p>
-                            <code className="mt-2 block font-mono text-[11px]">
-                              {selectedItem.failure.errorCode}
-                            </code>
-                          </>
-                        ) : null}
-                        <Link
-                          className="mt-3 inline-flex min-h-8 items-center font-semibold underline"
-                          href={`/admin/creative/runs/${encodeURIComponent(selectedRun.id)}`}
-                        >
-                          {t("Open run to retry")}
-                        </Link>
-                      </div>
+                      <GenerationRunFailure
+                        detail={selectedItem.failure?.operatorGuidance}
+                        errorCode={selectedItem.failure?.errorCode}
+                        linkLabel="Open run to retry"
+                        retryHint="Retry happens on the Run page, which keeps the retry command's idempotency record so a refresh or second click cannot start another paid generation. To change the source or brief, create a new video here instead."
+                        runHref={`/admin/creative/runs/${encodeURIComponent(selectedRun.id)}`}
+                      />
                     ) : null}
                   </div>
                 </div>

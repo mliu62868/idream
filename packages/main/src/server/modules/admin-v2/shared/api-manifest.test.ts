@@ -442,16 +442,18 @@ describe("Admin v2 API permission and contract manifest", () => {
       "GET",
       "/api/v2/admin/commands/cmd-1",
     );
+    // SPEC: command status is authorized by the target's read permission alone; Character-scoped
+    //       bundles carry no dashboard.read and must still read back their own commands.
     expect(
       resolveAdminV2ManifestAuthorization(command!, "dashboard.read"),
-    ).toEqual(["dashboard.read"]);
+    ).toBeNull();
     expect(resolveAdminV2ManifestAuthorization(command!, "case.read")).toEqual([
-      "dashboard.read",
       "case.read",
     ]);
     expect(command?.authorization).toMatchObject({
-      kind: "all_of_and_one_of_by_resource",
-      oneOf: expect.arrayContaining([
+      kind: "one_of_by_resource",
+      resolver: "command_target_read",
+      permissions: expect.arrayContaining([
         ...new Set(Object.values(ADMIN_COMMAND_TARGET_READ_PERMISSIONS)),
       ]),
     });

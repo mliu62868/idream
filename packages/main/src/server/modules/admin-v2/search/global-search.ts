@@ -10,6 +10,7 @@ import {
   operationalUserWhere,
 } from "@/server/modules/metric-data-scope";
 import { escapeLike } from "../shared/escape-like";
+import { creativeRunScopeWhere } from "../creative/run-scope";
 
 export async function globalAdminSearch(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");
@@ -19,6 +20,10 @@ export async function globalAdminSearch(request: Request) {
     ? await effectiveCharacterIdsForPermission(actor.id, actor.role, "character.project.read")
     : new Set<string>();
   const contains = { contains: escapeLike(query.q), mode: "insensitive" as const };
+  // SPEC: a Character-scoped creative.run.read grant finds only Runs under its assigned Characters.
+  const runScopeWhere = permissions.has("creative.run.read")
+    ? creativeRunScopeWhere(await effectiveCharacterIdsForPermission(actor.id, actor.role, "creative.run.read"))
+    : null;
   const incidentScope = permissions.has("ops.incident.read")
     ? await incidentReadScopeWhere(prisma, actor)
     : null;
@@ -30,7 +35,7 @@ export async function globalAdminSearch(request: Request) {
       ? prisma.character.findMany({ where: operationalCharacterWhere({ deletedAt: null, ...(characterScope === null ? {} : { id: { in: [...characterScope] } }), OR: [{ id: contains }, { name: contains }, { description: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     permissions.has("creative.run.read")
-      ? prisma.contentProductionBatch.findMany({ where: operationalContentProductionBatchWhere({ OR: [{ id: contains }, { title: contains }, { targetId: contains }, { purpose: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
+      ? prisma.contentProductionBatch.findMany({ where: operationalContentProductionBatchWhere({ ...(runScopeWhere ? { AND: [runScopeWhere] } : {}), OR: [{ id: contains }, { title: contains }, { targetId: contains }, { purpose: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     permissions.has("case.read")
       ? prisma.adminCase.findMany({ where: { ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}), OR: [{ id: contains }, { targetId: contains }, { caseKey: contains }, { type: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })

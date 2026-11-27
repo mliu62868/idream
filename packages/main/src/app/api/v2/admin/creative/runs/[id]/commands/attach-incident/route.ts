@@ -6,6 +6,7 @@ import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/
 import {
   attachCreativeRunToIncident,
 } from "@/server/modules/admin-v2/creative/incident-attachment";
+import { creativeRunAuthorityResource } from "@/server/modules/admin-v2/creative/run-scope";
 import { adminMutationResultValidator, adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
@@ -16,8 +17,10 @@ export const runtime = "nodejs";
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   return adminV2Route(request, async () => {
-    const actor = await actorWithPermission(request, "ops.incident.manage");
-    await actorWithPermission(request, "creative.run.write");
+    // Both manifest permissions are checked against the Run's Character (none -> global grants only).
+    const resource = await creativeRunAuthorityResource(id);
+    const actor = await actorWithPermission(request, "ops.incident.manage", resource);
+    await actorWithPermission(request, "creative.run.write", resource);
     const body = await jsonBody(request, "creativeRunAttachIncidentRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();

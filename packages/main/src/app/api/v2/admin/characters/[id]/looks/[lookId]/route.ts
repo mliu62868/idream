@@ -13,8 +13,9 @@ export function PATCH(
   context: { params: Promise<{ id: string; lookId: string }> },
 ) {
   return adminV2Route(request, async () => {
-    const actor = await actorWithPermission(request, "content.official.write");
     const { id, lookId } = await context.params;
+    // archiveCharacterLookAsAdmin only archives a Look that belongs to this Character.
+    const actor = await actorWithPermission(request, "content.official.write", { characterId: id });
     const body = await jsonBody(request, "characterLookArchiveRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId =

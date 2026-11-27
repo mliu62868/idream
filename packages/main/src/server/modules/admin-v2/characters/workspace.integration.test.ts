@@ -23,6 +23,7 @@ import {
 } from "./release-snapshot";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { characterCommandCoordinationKey } from "./command-coordination";
+import { estimateCreativeRunCost } from "../creative/run-pricing";
 import { CHARACTER_IMAGE_IMPORT_REVIEW_EVIDENCE_SCHEMA } from "./image-qualification";
 
 describe("Character operator workspace", () => {
@@ -675,6 +676,13 @@ describe("Character operator workspace", () => {
         },
       });
       expect(detail.visual.routeQualifications).toHaveLength(21);
+      // The pre-submit image price comes from the same quote the Creative Run admission records.
+      expect(detail.visual.imageGenerationEstimates).toContainEqual({
+        profileKey: generationProfileKey,
+        perItemCostDreamcoins: (
+          await estimateCreativeRunCost({ profileId: generationProfileKey, count: 1 })
+        ).perItemCostDreamcoins,
+      });
     } finally {
       await prisma.generationRouteQualification.deleteMany({
         where: { id: { in: noisyQualificationIds } },

@@ -384,6 +384,7 @@ describe("Creative Run v2 brief and launch", () => {
     const detail = await getCreativeRunDetail({
       runId: directedBatchId,
       actor: { id: actorId, role: "admin" },
+      characterScope: null,
     });
     expect(detail).toMatchObject({
       reviewContext: {

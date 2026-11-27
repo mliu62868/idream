@@ -10,6 +10,8 @@ describe("Character Project creation authority", () => {
   const actorId = `character-create-admin-${suffix}`;
   const deniedActorId = `character-create-denied-${suffix}`;
   const scopedActorId = `character-create-scoped-${suffix}`;
+  const untaggedActorId = `character-create-untagged-${suffix}`;
+  const tagIds: string[] = [];
   const idempotencyKey = `character-create-${suffix}`;
   const requestId = `character-create-request-${suffix}`;
   const createdIds: string[] = [];
@@ -79,8 +81,22 @@ describe("Character Project creation authority", () => {
           role: "user",
           status: "active",
         },
+        {
+          id: untaggedActorId,
+          email: `${untaggedActorId}@example.test`,
+          role: "admin",
+          status: "active",
+        },
       ],
     });
+    await prisma.adminUserPermission.create({ data: {
+      userId: untaggedActorId, permissionKey: "content.tag.write", effect: "revoke",
+      reason: "Creates Characters but cannot tag them", createdById: actorId,
+    } });
+    for (const label of ["Slow burn", "Night owl"]) {
+      const tag = await prisma.tag.create({ data: { slug: `create-${label.replace(" ", "-").toLowerCase()}-${suffix}`, label } });
+      tagIds.push(tag.id);
+    }
     await prisma.adminUserGrantBundle.create({ data: {
       userId: scopedActorId, bundleKey: "character_producer",
       scope: { characterIds: ["assigned-character"] }, createdById: actorId,
@@ -90,7 +106,7 @@ describe("Character Project creation authority", () => {
 
   afterAll(async () => {
     const commands = await prisma.controlPlaneCommand.findMany({
-      where: { actorId, commandType: "character.project.create" },
+      where: { actorId: { in: [actorId, untaggedActorId] }, commandType: "character.project.create" },
       select: { targetId: true },
     });
     const projectIds = commands.map((command) => command.targetId);
@@ -104,9 +120,9 @@ describe("Character Project creation authority", () => {
     await prisma.adminCollaborationActivity.deleteMany({
       where: { targetId: { in: projectIds } },
     });
-    await prisma.adminAuditLog.deleteMany({ where: { actorId } });
+    await prisma.adminAuditLog.deleteMany({ where: { actorId: { in: [actorId, untaggedActorId] } } });
     await prisma.controlPlaneCommand.deleteMany({
-      where: { actorId, commandType: "character.project.create" },
+      where: { actorId: { in: [actorId, untaggedActorId] }, commandType: "character.project.create" },
     });
     await prisma.characterRevision.deleteMany({
       where: { projectId: { in: projectIds } },
@@ -123,8 +139,10 @@ describe("Character Project creation authority", () => {
     await prisma.character.deleteMany({ where: { id: { in: characterIds } } });
     await prisma.moderationEvent.deleteMany({ where: { targetId: { in: characterIds } } });
     await prisma.adminUserGrantBundle.deleteMany({ where: { userId: scopedActorId } });
+    await prisma.adminUserPermission.deleteMany({ where: { userId: untaggedActorId } });
+    await prisma.tag.deleteMany({ where: { id: { in: tagIds } } });
     await prisma.user.deleteMany({
-      where: { id: { in: [actorId, deniedActorId, scopedActorId] } },
+      where: { id: { in: [actorId, deniedActorId, scopedActorId, untaggedActorId] } },
     });
     await prisma.$disconnect();
   });
@@ -198,8 +216,11 @@ describe("Character Project creation authority", () => {
     ).toMatchObject({
       status: "succeeded",
       targetId: projectId,
-      requestHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      // INVARIANT: a request without tags hashes exactly as it did before tags joined the
+      // contract, so an old idempotency key still replays instead of conflicting.
+      requestHash: "aa6ab553e9d982d5472971bca66356cd1a1ca9bb62e7599aff0a5db755375dbb",
     });
+    expect(await prisma.characterTag.count({ where: { characterId } })).toBe(0);
 
     const resumed = await resumeCharacterProjectRoute(
       new Request(
@@ -213,7 +234,11 @@ describe("Character Project creation authority", () => {
     expect(resumed.status).toBe(200);
     expect(await resumed.json()).toMatchObject({
       data: {
-        authority: { characterId, projectId, projectVersion: 1 },
+        authority: {
+          characterId, projectId, projectVersion: 1,
+          // Resuming lands where creating and copying land: the images page.
+          deepLink: `/admin/characters/${characterId}?tab=assets`,
+        },
         draft: {
           persona: { name: "Mara", age: 28 },
           visualDirection: { style: "realistic" },
@@ -251,6 +276,69 @@ describe("Character Project creation authority", () => {
     expect(
       await prisma.characterProject.count({ where: { id: createdIds[1] } }),
     ).toBe(1);
+
+    // An empty tag list is the same request as no tag list.
+    const emptyTags = await createCharacterProjectRoute(
+      request(actorId, "admin", { ...body, tagIds: [] }, idempotencyKey, `${requestId}-empty-tags`),
+    );
+    expect(emptyTags.status).toBe(200);
+    expect(await emptyTags.json()).toMatchObject({ data: { characterId: createdIds[0], replayed: true } });
+  });
+
+  it("attaches tags in the same transaction and replays one result for the same tag set", async () => {
+    const key = `tagged-create-${suffix}`;
+    const name = `Tagged Character ${suffix}`;
+    const tagged = { ...body, persona: { ...body.persona, name }, tagIds: [tagIds[1], tagIds[0], tagIds[1]] };
+    const response = await createCharacterProjectRoute(request(actorId, "admin", tagged, key, `tagged-${suffix}`));
+    expect(response.status).toBe(201);
+    const created = ((await response.json()) as { data: { characterId: string; projectId: string } }).data;
+    const links = await prisma.characterTag.findMany({ where: { characterId: created.characterId } });
+    expect(links.map((link) => link.tagId).sort()).toEqual([...tagIds].sort());
+    expect(await prisma.adminAuditLog.findFirstOrThrow({
+      where: { targetId: created.projectId, action: "character.project.created" },
+    })).toMatchObject({ after: expect.objectContaining({ tags: ["Night owl", "Slow burn"] }) });
+
+    const replay = await createCharacterProjectRoute(request(actorId, "admin", {
+      ...tagged, tagIds: [tagIds[0], tagIds[1]],
+    }, key, `tagged-replay-${suffix}`));
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ data: { characterId: created.characterId, replayed: true } });
+    expect(await prisma.character.count({ where: { name } })).toBe(1);
+
+    const changedTags = await createCharacterProjectRoute(request(actorId, "admin", {
+      ...tagged, tagIds: [tagIds[0]],
+    }, key, `tagged-conflict-${suffix}`));
+    expect(changedTags.status).toBe(409);
+  });
+
+  it("creates nothing when a tag does not exist", async () => {
+    const key = `unknown-tag-create-${suffix}`;
+    const name = `Unknown tag Character ${suffix}`;
+    const response = await createCharacterProjectRoute(request(actorId, "admin", {
+      ...body, persona: { ...body.persona, name }, tagIds: [tagIds[0], `missing-tag-${suffix}`],
+    }, key, `unknown-tag-${suffix}`));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { details: { missing: [`missing-tag-${suffix}`] } } });
+    expect(await prisma.character.count({ where: { name } })).toBe(0);
+    expect(await prisma.controlPlaneCommand.count({ where: { actorId, idempotencyKey: key } })).toBe(0);
+  });
+
+  it("requires the tag write permission only when the request carries tags", async () => {
+    const name = `Untagged actor Character ${suffix}`;
+    const key = `untagged-actor-${suffix}`;
+    const response = await createCharacterProjectRoute(request(untaggedActorId, "admin", {
+      ...body, persona: { ...body.persona, name }, tagIds: [tagIds[0]],
+    }, key, `untagged-actor-request-${suffix}`));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { details: { permission: "content.tag.write" } } });
+    expect(await prisma.character.count({ where: { name } })).toBe(0);
+    expect(await prisma.controlPlaneCommand.count({ where: { actorId: untaggedActorId } })).toBe(0);
+
+    const untagged = await createCharacterProjectRoute(request(untaggedActorId, "admin", {
+      ...body, persona: { ...body.persona, name },
+    }, `${key}-without-tags`, `untagged-actor-plain-${suffix}`));
+    expect(untagged.status).toBe(201);
+    expect(await prisma.character.count({ where: { name } })).toBe(1);
   });
 
   it("denies actors without the effective Character Project write permission", async () => {

@@ -56,7 +56,12 @@ const state = vi.hoisted(() => {
         },
       },
       opsIncident: { findUnique: findIncident },
-      contentProductionBatch: { findUnique: findRun },
+      contentProductionBatch: {
+        // The Character-scope lookup (target only) is not the mutable preflight read under test.
+        findUnique: (args: { select?: { targetType?: boolean } }) => args.select?.targetType
+          ? Promise.resolve({ targetType: "none", targetId: null })
+          : findRun(),
+      },
       dreamcoinLedger: { findMany: vi.fn(async () => []) },
       generationModelProfile: { findFirst: vi.fn(async () => ({ id: "profile-1" })) },
       generationAttempt: { findFirst: vi.fn(async () => ({ id: "attempt-1" })) },

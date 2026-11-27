@@ -3,10 +3,12 @@ import { adminV2OperationAllowed } from "@/lib/admin-v2-operation";
 
 /**
  * SPEC: 角色运营台每一个受写入门控的能力 → 它需要的 effective permission key。
- * INTENT: shell 曾经在 nav 的 render 里手拼这 11 个键传下来，那层拼装没有任何编译期约束；
- *         下游又把其中 8 个逐条与 `!writesLocked` 相与，漏掉的 manageVoiceDefaults 让「保存
- *         系统语音默认」在 durable command 待决期间仍然可点 —— 运营点下去得到的是一个抛出的
- *         错误而不是禁用态。键集和写入锁各自只剩一处，这一类漏项不再可表达。
+ * INTENT: shell 曾经在 nav 的 render 里手拼这些键传下来，那层拼装没有任何编译期约束；
+ *         下游又把其中 8 个逐条与 `!writesLocked` 相与，漏掉的一项让一个写按钮在 durable
+ *         command 待决期间仍然可点 —— 运营点下去得到的是一个抛出的错误而不是禁用态。
+ *         键集和写入锁各自只剩一处，这一类漏项不再可表达。
+ * INVARIANT: 只登记作用于**这个角色**的写入。全平台默认声音（generation.config.write）已迁到
+ *            平台配置页，不再属于角色工作区。
  */
 export const CHARACTER_WORKSPACE_WRITES = {
   writeProject: "character.project.write",
@@ -14,7 +16,6 @@ export const CHARACTER_WORKSPACE_WRITES = {
   writeVisual: "content.official.write",
   createAssets: "creative.run.write",
   archiveAssets: "content.asset.review",
-  manageVoiceDefaults: "generation.config.write",
   // SPEC: 内容设置使用各自的写权限，character.project.write 不授予这些操作。
   writeTags: "content.tag.write",
   manageChatTools: "content.production.write",

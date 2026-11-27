@@ -180,7 +180,7 @@ export function MonitorPanel({
               {monitor ? (
                 <>
                   <p className="mt-3 text-sm leading-6">
-                    {t("Recommendation:")}{" "}
+                    {t("Release action:")}{" "}
                     {/*
                       SPEC: 线路失效时照权威算出来的 observed.reason 给下一步，不要写死一句话。
                       INTENT: 这里曾经恒定写着「重新资质化需要工程介入」。权威其实分了 11 种原因，

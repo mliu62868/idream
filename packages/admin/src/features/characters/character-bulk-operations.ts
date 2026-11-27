@@ -2,10 +2,11 @@ import {
   type CharacterPortfolioItem,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
+import { characterLifecycleOf } from "@idream/shared/admin";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { clearDurableMutationIntent } from "@/lib/durable-mutation-intent";
-import { characterReleaseCommandBody, characterServingCommandBody } from "./release-command";
-import { characterReleaseCreateMutation } from "@/features/image-workflow-transport";
+import { publishCharacterDirect, submitCharacterServingCommand } from "./release-command";
 import { purposeConfig, type CharacterAssetPurpose } from "./character-asset-studio-authority";
 import { characterImageFillSkipMessage, createOrRecoverMissingCharacterImage, defaultCharacterImageBrief } from "./creative-run-creation";
 
@@ -17,7 +18,7 @@ export const BULK_GENERATION_CHARACTER_LIMIT = 20;
 const MAX_CHARACTER_TAGS = 24;
 
 export type BulkAction =
-  | { readonly kind: "publish" | "pause" | "resume" | "archive" | "generate_missing" }
+  | { readonly kind: "publish" | "pause" | "resume" | "archive" | "restore" | "generate_missing" }
   | { readonly kind: "add_tag" | "remove_tag"; readonly tagId: string; readonly tagLabel: string };
 
 export const BULK_ACTION_LABELS: Record<BulkAction["kind"], string> = {
@@ -25,6 +26,7 @@ export const BULK_ACTION_LABELS: Record<BulkAction["kind"], string> = {
   pause: "Pause",
   resume: "Resume",
   archive: "Archive",
+  restore: "Restore draft",
   add_tag: "Add tag",
   remove_tag: "Remove tag",
   generate_missing: "Generate missing images",
@@ -51,9 +53,11 @@ export function bulkActionBlocker(
   item: CharacterPortfolioItem,
 ): string | null {
   const state = item.serving.state;
+  const lifecycle = characterLifecycleOf(item.serving);
   const commandBusy = item.journey.hasActiveCommand;
   if (kind === "publish") {
-    if (state === "retired") return "Archived or retired.";
+    if (lifecycle === "archived") return "Archived draft. Restore it first.";
+    if (lifecycle === "retired") return "Retired permanently. It cannot be published again.";
     if (commandBusy) return "Another command is in progress.";
     if ((item.journey.blockers?.length ?? 0) > 0) return "Resolve publish blockers first.";
     const readyStage = item.journey.stage === "publishing" || item.journey.stage === "preview";
@@ -74,8 +78,15 @@ export function bulkActionBlocker(
     if (state !== "inactive") return "Only unpublished drafts can be archived here.";
     return commandBusy ? "Another command is in progress." : null;
   }
+  if (kind === "restore") {
+    // INVARIANT: 只有归档草稿能恢复；已退役的已发布角色永远不能回到草稿。
+    if (lifecycle === "retired") return "Retired permanently. Retired characters cannot be restored.";
+    if (lifecycle !== "archived") return "Only archived drafts can be restored.";
+    return commandBusy ? "Another command is in progress." : null;
+  }
   if (kind === "add_tag" || kind === "remove_tag") return null;
-  if (state === "retired") return "Archived or retired.";
+  if (lifecycle === "archived") return "Archived draft. Restore it first.";
+  if (lifecycle === "retired") return "Retired permanently. It cannot be published again.";
   const blocker = item.journey.assetPack.generateMissingBlocker;
   if (blocker) return GENERATION_BLOCKER_COPY[blocker];
   return bulkMissingPurposes(item).length === 0 ? "No missing images." : null;
@@ -89,6 +100,8 @@ export interface BulkTask {
   readonly purpose: CharacterAssetPurpose | null;
   readonly state: BulkTaskState;
   readonly message: string | null;
+  /** 发布校验失败的检查项 key；回执里逐项列出，运营打开角色即可修。 */
+  readonly blockers?: readonly string[];
   readonly attempts: number;
 }
 
@@ -174,73 +187,33 @@ export function bulkGenerationRequest(
   };
 }
 
-export type BulkServingAction = "pause" | "resume" | "retire";
-
-const SERVING_SUMMARY: Record<BulkServingAction, string> = {
-  pause: "Pause serving",
-  resume: "Resume serving",
-  retire: "Archive draft",
-};
-
-async function waitForCommand(commandId: string, sleep: (ms: number) => Promise<void>) {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    await sleep(700);
-    const command = await adminV2Operation("GET /api/v2/admin/commands/:commandId", {
-      path: { commandId },
-    }).catch(() => null);
-    if (!command) return "accepted" as const;
-    if (command.status === "succeeded") return "succeeded" as const;
-    if (command.status === "failed" || command.status === "cancelled") {
-      throw new Error(`Command ${command.status}.`);
+// SPEC: 读当前标签 → 算目标集合 → 带 expectedTagIds 整组替换。服务端在事务内比对，读后被别人改过
+//       就 409；这里重读一次再算一次，仍冲突就作为该行失败返回，绝不静默覆盖别人的写入。
+async function changeTag(characterId: string, tagId: string, add: boolean) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const { character } = await adminV2Operation("GET /api/v2/admin/content/characters/:id", {
+      path: { id: characterId },
+    });
+    const current = character.tags.map((tag: { readonly id: string }) => tag.id);
+    const next = add
+      ? [...new Set([...current, tagId])]
+      : current.filter((id: string) => id !== tagId);
+    if (next.length === current.length && next.every((id: string) => current.includes(id))) return;
+    if (next.length > MAX_CHARACTER_TAGS) {
+      throw new Error("This Character already has the maximum number of tags.");
+    }
+    try {
+      await adminV2Operation("PUT /api/v2/admin/content/characters/:id/tags", {
+        path: { id: characterId },
+        body: { tagIds: next, expectedTagIds: current, confirmation: `${characterId}:tags` },
+      });
+      return;
+    } catch (cause) {
+      const raced = cause instanceof AdminV2RequestError && cause.outcome === "answered" && cause.status === 409;
+      if (!raced) throw cause;
     }
   }
-  return "accepted" as const;
-}
-
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-// SPEC: 与发布页同一条命令；reason 自动填，不问运营。幂等键由 adminV2Operation 的账本管，
-//       重试不会变成第二次写入；entityVersion 仍是 CAS，版本过期由服务端拒绝。
-interface BulkServingCommandInput {
-  readonly characterId: string;
-  readonly action: BulkServingAction;
-  readonly entityVersion: number;
-}
-
-export function requestServingCommand(input: BulkServingCommandInput) {
-  const { characterId, action } = input;
-  const options = {
-    path: { id: characterId },
-    body: characterServingCommandBody({ ...input, summary: SERVING_SUMMARY[action] }),
-  };
-  return action === "pause"
-    ? adminV2Operation("POST /api/v2/admin/characters/:id/commands/pause", options)
-    : action === "resume"
-      ? adminV2Operation("POST /api/v2/admin/characters/:id/commands/resume", options)
-      : adminV2Operation("POST /api/v2/admin/characters/:id/commands/retire", options);
-}
-
-export async function submitServingCommand(input: BulkServingCommandInput & { readonly sleep?: (ms: number) => Promise<void> }) {
-  const accepted = await requestServingCommand(input);
-  return waitForCommand(accepted.commandId, input.sleep ?? defaultSleep);
-}
-
-async function changeTag(characterId: string, tagId: string, add: boolean) {
-  const { character } = await adminV2Operation("GET /api/v2/admin/content/characters/:id", {
-    path: { id: characterId },
-  });
-  const current = character.tags.map((tag: { readonly id: string }) => tag.id);
-  const next = add
-    ? [...new Set([...current, tagId])]
-    : current.filter((id: string) => id !== tagId);
-  if (next.length === current.length && next.every((id: string) => current.includes(id))) return;
-  if (next.length > MAX_CHARACTER_TAGS) {
-    throw new Error("This Character already has the maximum number of tags.");
-  }
-  await adminV2Operation("PUT /api/v2/admin/content/characters/:id/tags", {
-    path: { id: characterId },
-    body: { tagIds: next, confirmation: `${characterId}:tags` },
-  });
+  throw new Error("Tags changed while this was running. Refresh and try again.");
 }
 
 // 同一 Creative Run 接纳 module 处理工作台与批量。浏览器仍保存每个槽位的原始请求直至收到精确回执。
@@ -295,32 +268,12 @@ export function createBulkExecutor(input: {
     }
     if (action.kind === "publish") {
       const current = await detail(task.characterId, true);
-      const existingCandidate = current.releases.find(({ release }) => release.status === "approved")?.release;
-      const targetRelease = existingCandidate
-        ? { id: existingCandidate.id, version: existingCandidate.version }
-        : await (async () => {
-            const mutation = characterReleaseCreateMutation(
-              task.characterId,
-              current.project.version,
-              "Publish current Character",
-              `${task.characterId}:publish`,
-            );
-            const created = await adminV2Operation(mutation.operationId, mutation.options);
-            return { id: created.id, version: created.version };
-          })();
-      const accepted = await adminV2Operation(
-        "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish",
-        {
-          path: { id: task.characterId, releaseId: targetRelease.id },
-          body: characterReleaseCommandBody({
-            characterId: task.characterId,
-            kind: "publish",
-            release: targetRelease,
-            summary: "Publish current Character",
-          }),
-        },
-      );
-      return waitForCommand(accepted.commandId, input.sleep ?? defaultSleep);
+      return publishCharacterDirect({
+        characterId: task.characterId,
+        projectVersion: current.project.version,
+        candidate: current.releases.find(({ release }) => release.status === "approved")?.release,
+        sleep: input.sleep,
+      });
     }
     if (action.kind === "generate_missing") {
       if (!task.purpose) throw new Error("This task has no image purpose.");
@@ -335,10 +288,11 @@ export function createBulkExecutor(input: {
     const entityVersion = task.attempts > 0
       ? (await detail(task.characterId, true)).serving?.version ?? item.serving.version
       : item.serving.version;
-    return submitServingCommand({
+    return submitCharacterServingCommand({
       characterId: task.characterId,
       action: action.kind === "archive" ? "retire" : action.kind,
       entityVersion,
+      servingState: item.serving.state,
       sleep: input.sleep,
     });
   };

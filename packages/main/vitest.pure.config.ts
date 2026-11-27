@@ -51,6 +51,7 @@ export default defineConfig({
       "src/server/modules/admin-v2/content/tags-list.test.ts",
       "src/server/modules/admin-v2/content/templates-reliability.test.ts",
       "src/server/modules/admin-v2/creative/run-create-authority.test.ts",
+      "src/server/modules/admin-v2/creative/run-pricing.test.ts",
       "src/server/modules/admin-v2/creative/run-read.test.ts",
       "src/server/modules/admin-v2/shared/admin-mutation.test.ts",
       "src/server/modules/admin-v2/shared/admin-bff.test.ts",

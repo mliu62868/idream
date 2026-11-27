@@ -269,14 +269,20 @@ describe("Soul draft retention", () => {
     await render(actor, identity("identity_bootstrap:job-1"));
     const anchor = container.querySelector<HTMLTextAreaElement>('textarea[name="identityAnchor"]')!;
     expect(anchor.closest("fieldset[disabled]")).not.toBeNull();
-    expect(container.textContent).toContain("describes it in image generation and can no longer be edited");
-    expect(container.querySelector('a[href$="?tab=visual"]')?.textContent).toBe("Change the look");
+    // 锁定后创建时的外观描述折叠成只读小节，不再占据显眼位置；身份在「外观与身份」管理。
+    const folded = container.querySelector<HTMLDetailsElement>('details[data-testid="creation-appearance"]')!;
+    expect(folded.open).toBe(false);
+    expect(folded.contains(anchor)).toBe(true);
+    expect(folded.querySelector("summary")?.textContent).toContain("Appearance written at creation");
+    expect(container.textContent).toContain("Image generation still reads this text, but it can no longer be edited");
+    expect(container.querySelector('a[href$="?tab=visual"]')?.textContent).toBe("Open Appearance & identity");
     // Persona fields stay editable.
     expect(container.querySelector<HTMLInputElement>('input[name="name"]')!.closest("fieldset[disabled]")).toBeNull();
 
     leavePanel();
     await render(actor, identity("identity_calibration:job-2"));
-    expect(container.textContent).toContain("the text below is from creation and is no longer used");
+    expect(container.textContent).toContain("Image generation uses the description written when the look was changed, not this text.");
+    expect(container.querySelector('details[data-testid="creation-appearance"]')).not.toBeNull();
   });
 
   it("keeps Save disabled for a current-format Soul with nothing changed", async () => {

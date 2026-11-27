@@ -36,6 +36,7 @@ describe("GET /api/v2/admin/bootstrap", () => {
     expect(bootstrap.actor).toEqual({ id: adminId, role: "admin" });
     expect(bootstrap.canReadDashboard).toBe(true);
     expect(bootstrap.canCreateCharacters).toBe(true);
+    expect(bootstrap.canAssistCharacterDrafts).toBe(true);
     expect(bootstrap.permissions).toContain("dashboard.read");
     expect(bootstrap.shellSignals.productTimezone).toBeTruthy();
   });
@@ -66,6 +67,10 @@ describe("GET /api/v2/admin/bootstrap", () => {
       const { bootstrap } = adminBootstrapResponseSchema.parse(envelope.data);
       expect(bootstrap.permissions).toContain("character.project.write");
       expect(bootstrap.canCreateCharacters).toBe(false);
+      // content.official.write comes only from the Character-scoped bundle: it cannot back the
+      // template-page assist, which names no Character.
+      expect(bootstrap.permissions).toContain("content.official.write");
+      expect(bootstrap.canAssistCharacterDrafts).toBe(false);
     } finally {
       await prisma.adminUserGrantBundle.delete({ where: { id: grant.id } });
     }

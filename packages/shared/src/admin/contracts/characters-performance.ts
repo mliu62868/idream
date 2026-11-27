@@ -13,7 +13,7 @@ import {
   adminVerificationStateSchema,
   operationalStateViewSchema,
 } from "./common";
-import { characterServingStateSchema } from "./characters-common";
+import { characterLifecycleSchema, characterServingStateSchema } from "./characters-common";
 import {
   characterReleaseSchema,
   characterServingSchema,
@@ -581,7 +581,11 @@ const booleanQuerySchema = z.union([
 export const characterPortfolioQuerySchema = adminCursorQuerySchema.extend({
   // 反向翻页：把上一页响应里的 startCursor 原样回传。与 cursor 互斥。
   before: z.string().trim().min(1).optional(),
+  // INTENT: 原始 Serving 状态筛选，保留给旧调用方；retired 同时命中归档草稿与已退役角色。
   servingState: characterServingStateSchema.optional(),
+  // SPEC: 运营生命周期筛选，区分「归档草稿（可恢复）」与「已退役（不可恢复）」。
+  //       与 servingState 同时给时取交集。
+  lifecycle: characterLifecycleSchema.optional(),
   readiness: adminReadinessSchema.optional(),
   placementId: adminIdSchema.optional(),
   // Studio needs lifecycle and asset readiness; Growth explicitly consumes metrics.
@@ -621,7 +625,10 @@ export const characterPortfolioFacetsSchema = z
         draft: z.number().int().nonnegative(),
         live: z.number().int().nonnegative(),
         paused: z.number().int().nonnegative(),
+        // 归档草稿（retired 且无 currentRelease），可恢复。
         archived: z.number().int().nonnegative(),
+        // 已退役（retired 且保留 currentRelease），不可恢复。
+        retired: z.number().int().nonnegative(),
         attention: z.number().int().nonnegative(),
         live_asset_pack_incomplete: z.number().int().nonnegative(),
         pending_changes: z.number().int().nonnegative(),

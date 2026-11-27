@@ -104,7 +104,8 @@ describe("Character workspace shell refresh", () => {
     const portfolio = <CharacterPortfolio canCreate canRead canOpenAssets canOpenProjects mode="studio" />;
     await act(async () => root.render(portfolio));
     await waitUntil(() => adminV2Operation.mock.calls.length === 1);
-    expect(new URLSearchParams(adminV2Operation.mock.calls[0][1].query).get("servingState")).toBe("live");
+    // 旧书签的 servingState 映射为生命周期筛选。
+    expect(new URLSearchParams(adminV2Operation.mock.calls[0][1].query).get("lifecycle")).toBe("live");
     await act(async () => {
       window.history.pushState(null, "", "/admin/characters");
       root.render(<CharacterPortfolio canCreate canRead canOpenAssets canOpenProjects mode="studio" />);
@@ -113,6 +114,7 @@ describe("Character workspace shell refresh", () => {
     const query = new URLSearchParams(adminV2Operation.mock.calls[1][1].query);
     expect(query.has("search")).toBe(false);
     expect(query.has("servingState")).toBe(false);
+    expect(query.has("lifecycle")).toBe(false);
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Search characters"]')!.value).toBe("");
   });
 

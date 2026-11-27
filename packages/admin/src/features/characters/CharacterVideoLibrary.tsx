@@ -22,6 +22,7 @@ import {
   CharacterVideoStudio,
   type RunCommittedMutation,
 } from "./CharacterVideoStudio";
+import { characterVideoSourceOptions } from "./character-video-sources";
 import { CharacterChatLibrary, type CharacterChatLibrarySource } from "./CharacterChatLibrary";
 import { operatorReasonOrDefault, CHARACTER_LIBRARY_ARCHIVE_DEFAULT_REASON } from "./character-library-archive";
 
@@ -277,7 +278,8 @@ export function CharacterVideoLibrary({
 
       {canReadProduction ? <CharacterChatLibrary characterId={data.character.id} mediaType="video"
         canWrite={canImport} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)}
-        defaultProfileId={characterVideoProductionRecipe.profileKey} /> : null}
+        packProfiles={[{ key: characterVideoProductionRecipe.profileKey, label: characterVideoProductionRecipe.modelLabel }]}
+        packSources={characterVideoSourceOptions(data)} /> : null}
 
       <section aria-busy={loading} aria-label={t("Character video library")}>
         {/* SPEC: Only a successful read can establish an empty library. */}

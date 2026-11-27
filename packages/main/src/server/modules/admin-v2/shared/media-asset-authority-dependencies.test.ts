@@ -18,6 +18,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
       generationJob: emptyDelegate(),
       contentProductionItem: emptyDelegate(),
       characterServing: emptyDelegate(),
+      characterMediaLibraryEntry: emptyDelegate(),
     };
     const assetIds = Array.from({ length: 100 }, (_, index) => `asset-${index}`);
 
@@ -39,8 +40,9 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
       db.generationJob.findMany,
       db.contentProductionItem.findMany,
       db.characterServing.findMany,
+      db.characterMediaLibraryEntry.findMany,
     ];
-    expect(querySpies).toHaveLength(10);
+    expect(querySpies).toHaveLength(11);
     for (const query of querySpies) {
       expect(query).toHaveBeenCalledTimes(1);
     }
@@ -84,6 +86,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
       generationJob: emptyDelegate(),
       contentProductionItem: emptyDelegate(),
       characterServing,
+      characterMediaLibraryEntry: emptyDelegate(),
     };
 
     const dependencies = await mediaAssetAuthorityDependenciesBatch(
@@ -127,6 +130,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
       generationJob: emptyDelegate(),
       contentProductionItem: emptyDelegate(),
       characterServing: emptyDelegate(),
+      characterMediaLibraryEntry: emptyDelegate(),
     };
 
     const dependencies = await mediaAssetAuthorityDependenciesBatch(

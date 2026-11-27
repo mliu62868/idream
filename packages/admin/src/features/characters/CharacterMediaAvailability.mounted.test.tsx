@@ -386,7 +386,7 @@ describe("Character media availability", () => {
 
     expect(container.textContent).not.toContain("No reviewed images are selectable");
     await act(async () => button("Retry").click());
-    await waitUntil(() => container.querySelector('button[aria-label="Use image for character_cover"]') !== null);
+    await waitUntil(() => container.querySelector('button[aria-label="Use image for Primary portrait"]') !== null);
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(adminV2Operation).toHaveBeenCalledTimes(2);
   });
@@ -395,13 +395,13 @@ describe("Character media availability", () => {
     adminV2Operation.mockResolvedValueOnce({ items: [image] })
       .mockRejectedValue(new Error("Refresh unavailable"));
     await renderPlacement();
-    await waitUntil(() => container.querySelector('button[aria-label="Use image for character_cover"]') !== null);
+    await waitUntil(() => container.querySelector('button[aria-label="Use image for Primary portrait"]') !== null);
     await act(async () => button("Cancel").click());
     const choose = container.querySelector<HTMLButtonElement>("article button");
     await act(async () => choose?.click());
     await waitUntil(() => container.querySelector('[role="alert"]') !== null);
 
-    expect(container.querySelector('button[aria-label="Use image for character_cover"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Use image for Primary portrait"]')).not.toBeNull();
     expect(container.textContent).toContain("Showing previously loaded items.");
     expect(container.textContent).not.toContain("No reviewed images are selectable");
     expect(button("Retry").disabled).toBe(false);
@@ -416,7 +416,7 @@ describe("Character media availability", () => {
       return {};
     });
     await renderPlacement();
-    await waitUntil(() => container.querySelector('button[aria-label="Use image for character_cover"]') !== null);
+    await waitUntil(() => container.querySelector('button[aria-label="Use image for Primary portrait"]') !== null);
     await act(async () => button("Use image").click());
     await waitUntil(() => container.querySelector('[role="alert"]') !== null);
     expect(button("Use image").disabled).toBe(false);
@@ -433,7 +433,7 @@ describe("Character media availability", () => {
     await waitUntil(() => container.textContent?.includes("Load more images") === true);
     expect(container.textContent).not.toContain("No images are available");
     await act(async () => button("Load more images").click());
-    await waitUntil(() => container.querySelector('button[aria-label="Use image for character_cover"]') !== null);
+    await waitUntil(() => container.querySelector('button[aria-label="Use image for Primary portrait"]') !== null);
     expect(adminV2Operation.mock.calls[1]?.[1].query.get("cursor")).toBe("older-images");
   });
 

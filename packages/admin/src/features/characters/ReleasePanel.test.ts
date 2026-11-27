@@ -29,7 +29,9 @@ describe("Character release panel", () => {
 
   it("exposes one publish action and no QA, review, validation, or schedule workflow", () => {
     expect(workspaceSource).toContain('t("Publish Character")');
-    expect(workspaceSource).toContain("characterReleaseCreateMutation");
+    // 「建候选 + publish」的候选准备只有 release-command 一份，发布页与批量共用。
+    expect(workspaceSource).toContain("prepareCharacterPublishTarget");
+    expect(workspaceSource).not.toContain("characterReleaseCreateMutation");
     expect(workspaceSource).toContain('submitCommand("publish"');
     expect(workspaceSource).not.toContain("qaRunId");
     expect(workspaceSource).not.toContain("characterReleaseReviewMutation");

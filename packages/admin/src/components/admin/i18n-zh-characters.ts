@@ -9,6 +9,19 @@ export const adminZhCharacters: Record<string, string> = {
   "Shorten Additional details before publishing. The compiled persona exceeds its prompt budget.": "编译后的人设超出了提示词预算，请缩短补充设定后再发布。",
   "Check the table header, separators and quoted fields.": "请检查表头、分隔符和带引号的单元格。",
   "Resolve publish blockers first.": "请先解决发布阻塞项。",
+  // 生命周期：归档草稿（可恢复）与已停用（永久）分开。
+  "Archived drafts": "归档草稿",
+  "Retired permanently": "已永久停用",
+  "Archived draft. Restore it first.": "这是归档草稿，请先恢复。",
+  "Retired permanently. It cannot be published again.": "已永久停用，不能再次发布。",
+  "Retired permanently. Retired characters cannot be restored.": "已永久停用，停用的角色不能恢复为草稿。",
+  "Only archived drafts can be restored.": "只有归档草稿可以恢复。",
+  "Tags changed while this was running. Refresh and try again.": "执行期间标签已被他人修改，请刷新后重试。",
+  // 发布校验失败：候选已自动撤回，草稿解冻。
+  "Fix: {checks}": "需修复：{checks}",
+  "Release checks failed. The candidate was withdrawn and the draft can be edited again.": "发布检查未通过。候选已自动撤回，草稿可以继续编辑。",
+  "Release checks failed.": "发布检查未通过。",
+  "This candidate failed release checks and can never go live. Discard it to edit the draft again. The live Character stays unchanged.": "此候选未通过发布检查，无法上线。放弃它即可继续编辑草稿，线上角色保持不变。",
   "Not ready to publish.": "尚未达到可发布状态。",
   "Layout view": "视图切换",
   "Card view": "卡片视图",
@@ -45,13 +58,10 @@ export const adminZhCharacters: Record<string, string> = {
   "Next image: {slot}": "下一张 · {slot}",
   "Import existing image": "导入已有图片",
   "Choose from library": "从图库选图",
-  "Create or import images for this Character’s display placements.": "为这个角色创建或导入展示图。",
   "Available image candidates": "已有可选图片",
   "Use candidate for {slot}": "采用为{slot}",
   "Work queues": "工作队列",
   "{count} selected outside this page": "其中 {count} 项在其他页面或筛选范围",
-  "Replace this image in its display placement before removing it.": "请先在展示位置替换这张图片，再移除它。",
-  "At least one of these images is in use, so none were removed. Replace it in its display placement first.": "其中有图片正在使用。请先替换对应展示图，再移除这批图片。",
   "The draft has no opening message.": "草稿没有开场白。",
   "The draft persona must be saved in the current format before publishing.": "发布前需要以当前格式重新保存草稿人设。",
   "Paused {completed}/{total}": "暂停中 {completed}/{total}",
@@ -130,7 +140,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Another command is in progress.": "另一个命令正在进行。",
   "Only paused characters can be resumed.": "只有暂停中的角色可以恢复。",
   "Only unpublished drafts can be archived here.": "这里只能归档未发布的草稿。",
-  "Archived or retired.": "已归档或已退役。",
   "No missing images.": "没有缺失的图片。",
   "No visual identity yet.": "还没有视觉身份。",
   "The Reference Set is not active yet.": "参考图集尚未启用。",
@@ -218,13 +227,17 @@ export const adminZhCharacters: Record<string, string> = {
   "Create {count} private drafts": "创建 {count} 个私有草稿",
   "Copy as new draft": "复制为新草稿",
   "Copying…": "正在复制…",
-  "Advanced: voice defaults for all characters": "高级：所有角色的默认声音",
-  "Affects every character without its own voice, not just this one. New conversations use a saved change right away.": "影响所有没有单独设置声音的角色，不只是当前角色。保存后新对话立即使用。",
+  "This character has no features that never change, so it cannot be copied yet.": "这个角色还没有固定不变的外貌特征，暂时不能复制。",
+  "Add at least one in its settings, then copy again.": "请先在角色设置里至少补一项，再重新复制。",
+  "Copied as a new private draft.": "已复制为新的私有草稿。",
+  "Images copied: {count}.": "已复制图片：{count} 张。",
+  "Images that could not be copied and were left out: {count}.": "未能复制、已跳过的图片：{count} 张。",
+  "The visual identity came along with its reference images.": "视觉身份及其参考图已一并复制。",
+  "The visual identity was not copied. Set it up again on the Appearance & identity tab.": "视觉身份没有复制，请在「外观与身份」页重新设置。",
+  "Choose the primary portrait, character hero and chat moment images again; draft selections are not copied.": "请重新选择主肖像、角色主视觉和聊天场景图；草稿里的选图不会复制。",
   "Affects all characters": "影响所有角色",
-  "New conversations use this voice right away. It does not go through a Release.": "新对话立即使用这个声音，不需要发布版本。",
   "The selected voice is now active. New conversations use it right away.": "所选声音已生效，新对话立即使用。",
   "This character now inherits the system voice default. New conversations use it right away.": "该角色已改用系统默认声音，新对话立即使用。",
-  "Change look": "更换形象",
   "Reason for change (optional)": "更换原因（选填）",
   "Publication reason (optional)": "发布原因（选填）",
   "Change reason (optional)": "变更原因（选填）",
@@ -232,12 +245,7 @@ export const adminZhCharacters: Record<string, string> = {
   "This activates as a new identity version.": "这会启用为新的身份版本。",
   "Diagnostics and advanced settings": "诊断与高级设置",
   "Search by file name, tag, description or date": "按文件名、标签、描述或日期搜索",
-  "Use as cover": "用作封面",
-  "Use as hero": "用作详情大图",
-  "Use as chat image": "用作聊天图片",
-  "Used as {placements}": "已用作 {placements}",
   "Remove {count} images from the library?": "从图片库移除这 {count} 张图片？",
-  "If any of these images is in use, none will be removed. Replace it in its placement first.": "只要其中有一张正在使用，就不会移除任何图片。请先在槽位里替换它。",
   "These images will be archived and hidden from this Character's library.": "这些图片会被归档，并从该角色的图片库隐藏。",
   "{count} images removed from the library": "已从图片库移除 {count} 张图片",
   "At least one of these images is in use, so none were removed. Replace it in its placement above first.": "其中至少一张正在使用，因此没有移除任何图片。请先在上方槽位里替换它。",
@@ -287,7 +295,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Kept what you already wrote: {fields}.": "保留了你已填写的内容：{fields}。",
   "AI could not draft every field. Fill in the rest or try again.": "AI 未能生成全部字段，请补全其余内容或重试。",
   "Tags (optional)": "标签（可选）",
-  "The character was saved, but its tags were not. Try again, or clear the tags to continue.": "角色已保存，但标签没有保存。请重试，或取消选择标签后继续。",
+  "Before saving, the visual direction still needs:": "保存前，视觉方向还缺：",
+  "Add it in visual direction": "去视觉方向补上",
   "Existing look and intro": "模板已有的外观与简介",
   "Saved with this template and used to prefill the storefront creator. Editing the fields here keeps them.": "这些内容保存在模板里，主站创建时会用来预填。在此编辑其他字段不会清除它们。",
   "Face": "面部",
@@ -322,7 +331,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Close batch review": "关闭批量审核",
   "Batch review drafts ({count})": "批量审核草稿（{count} 项）",
   "Batch review saved for {count} items": "已保存 {count} 项的审核结果",
-  "Started pre-generation pack ({count} items): /admin/creative/runs/{runId}": "已启动素材预生成（{count} 项），任务地址为 /admin/creative/runs/{runId}",
   "Batch review could not be saved": "无法保存批量审核结果",
   "Batch review drafts": "批量审核草稿",
   "3-Field Batch Review": "三项批量审核",
@@ -347,13 +355,9 @@ export const adminZhCharacters: Record<string, string> = {
   "Batch pre-generate image pack (up to 30)": "批量预生成图片（最多 30 张）",
   "Batch pre-generate video pack (up to 10)": "批量预生成视频（最多 10 条）",
   "Queue up to 12 scene directions (max 30 total outputs) under visual identity v{version}.": "使用视觉身份 v{version} 处理最多 12 个场景方向，共生成不超过 30 张图片。",
-  "Queue 1–10 verified source image IDs (1 video clip per source) under visual identity v{version}.": "使用视觉身份 v{version} 和 1 至 10 个已核实的源图 ID，为每张源图生成一条视频。",
-  "Generation profile key": "生成配置键",
-  "profile-key": "配置键",
   "Pack brief": "批量生成简报",
   "Scene directions (one per line, 1–12 lines)": "场景方向（每行一项，1 至 12 行）",
   "Outputs per direction": "每个方向的生成张数",
-  "Verified source image IDs (one per line, 1–10 IDs)": "已核实的源图 ID（每行一个，1 至 10 个）",
   "Start batch pack": "开始批量生成",
   "View Creative Run": "查看创作运行",
   "Confirmed absent facts, one per line": "已确认不存在的内容，每行一项",
@@ -675,8 +679,6 @@ export const adminZhCharacters: Record<string, string> = {
     "这会为角色创建私密发布工作区。",
   "It does not create or publish a Release and does not make the Character visible in Explore or Community.":
     "此操作不会创建或发布 Release，也不会让角色出现在 Explore 或 Community。",
-  "This is a platform-wide setting. It changes new speech for every character that has no voice override, not just this one.":
-    "这是全站设置。它会改变所有没有单独指定语音的角色的新语音，不只是当前这个角色。",
   "This older image has no usable composition check on record. You can keep adjusting from it, and newly generated images can be selected again.":
     "旧图片缺少可采用的构图检查记录。可以从这张继续调整，生成的新图仍可重新选择。",
   "This response does not include a visual identity experiment route yet.":
@@ -859,7 +861,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Change reason": "变更原因",
   "Changed fields": "已变更字段",
   "Character name": "角色名称",
-  "Character Looks using role images": "使用角色图片的角色造型",
   "Character Studio ·": "角色工作室 ·",
   "Character chat": "角色聊天素材",
   "Character cover": "角色封面",
@@ -908,7 +909,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Clone and render preview": "克隆并生成试听",
   "Cloning and rendering preview…": "正在克隆并生成试听…",
   "Close editor": "收起编辑",
-  "Close system defaults": "收起系统默认配置",
   "Compare candidate {number} with current candidate":
     "将候选图 {number} 与当前候选图对比",
   "Compare release-attributed value and maturity.":
@@ -922,11 +922,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Check the renderer below, then publish from Release.":
     "核对下方的真实渲染效果，然后到「发布版本」完成上线。",
   "Continue to Release": "去发布",
-  "The look is locked to the current portrait. Image generation uses the description written when the look was changed; the text below is from creation and is no longer used.":
-    "长相已锁定为当前肖像。生图使用换长相时填写的描述；下面是创建时的文字，已不再使用。",
-  "The look is locked to the current portrait. The text below describes it in image generation and can no longer be edited.":
-    "长相已锁定为当前肖像。生图时仍用下面的文字描述它，但不能再修改。",
-  "Change the look": "换长相",
   "New images follow this description until the first portrait locks the look.":
     "在第一张肖像锁定长相之前，新图片都按这段描述生成。",
   "Move to a checked release": "升级为经过检查的发布版本",
@@ -940,8 +935,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Repair persona": "修复人设",
   "Elapsed {duration} · usually 1–2 minutes · you can leave this page and come back":
     "已用 {duration} · 通常 1–2 分钟 · 可以先离开，稍后回来查看",
-  "This clears the {count} cover, hero, and chat images already chosen for the draft. Choose them again afterwards. The live character is not affected.":
-    "这会清空草稿里已选好的 {count} 张封面、主视觉和聊天图，之后需要重新选择。线上角色不受影响。",
+  "This clears the {count} display images already chosen for the draft. Choose them again afterwards. The live character is not affected.":
+    "这会清空草稿里已选好的 {count} 张展示图（主肖像、角色主视觉、聊天场景图），之后需要重新选择。线上角色不受影响。",
   "A candidate release is waiting. Publish or discard it before changing images.":
     "有一个待发布版本正在等待。请先发布或放弃它，再更换图片。",
   "The saved persona could not be read": "已保存的人设无法读取",
@@ -1033,12 +1028,10 @@ export const adminZhCharacters: Record<string, string> = {
   "Current voice and one new candidate": "当前声音与一个新候选",
   "Asset generation authority": "素材生成权威",
   "Asset review authority": "素材审核权威",
-  "Avatar placement": "头像铺位",
   "Character snapshot": "角色快照",
   "Character status": "角色状态",
   "Customer-publishable assets": "用户可发布素材",
   "Generation authority": "生成权威",
-  "Image pack placement": "图片资产包铺位",
   "Live model canaries": "线上模型金丝雀验证",
   "Manage Character settings, assets, and live operations":
     "管理角色设定、素材与线上运营",
@@ -1087,6 +1080,9 @@ export const adminZhCharacters: Record<string, string> = {
   "Estimated cost unavailable": "暂无费用预估",
   "Estimated cost: {cost}": "预计消耗：{cost}",
   "Estimated cost: {cost} Dreamcoins": "预计消耗：{cost} 梦币",
+  "Estimated cost: {perItem} × {count} images = {total}": "预计消耗：{perItem} × {count} 张 = {total}",
+  "Estimated cost: up to {total} ({perItem} × {count} images). Placements that are skipped are not charged.":
+    "预计消耗：最多 {total}（{perItem} × {count} 张）。被跳过的展示位不计费。",
   "Estimated duration unavailable until this profile has completed health samples":
     "此配置完成健康样本后才会显示预计耗时",
   "Estimated duration: {duration} · {days}-day average · {count} completed run":
@@ -1153,7 +1149,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Identity anchor": "一句话形象",
   "Identity and quality safeguards are automatic. Add only exclusions specific to this image.":
     "系统会自动应用身份与质量约束；这里只填写这张图片需要额外避免的内容。",
-  "Identity reference images": "身份参考图",
   "Identity lock": "身份锁定",
   "Identity locked": "身份已锁定",
   "Identity match score ({minimum}–100 required)":
@@ -1393,7 +1388,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Open operations": "打开运营记录",
   "Open release": "打开发布流程",
   "Open role image production": "打开角色图片生产",
-  "Open system defaults": "展开系统默认配置",
   "Open the file directly": "直接打开该文件",
   "Open visual setup": "打开视觉设置",
   "Open {name}": "打开 {name}",
@@ -1408,7 +1402,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Pending character submissions": "待审核角色提交",
   "Pending submissions": "待审提交",
   "Performance only": "仅表现数据",
-  Persona: "角色人格",
+  Persona: "人设",
   "Persona foundation": "人格基础",
   Personality: "性格",
   "Playback was aborted before the video loaded.":
@@ -1463,8 +1457,6 @@ export const adminZhCharacters: Record<string, string> = {
     "只读：启用声音需要 character.release.publish 权限。",
   "Read-only: content.official.write is not granted.":
     "只读：尚未授予 content.official.write。",
-  "Read-only: generation.config.write is required to change system voice defaults.":
-    "只读：修改系统默认声音需要 generation.config.write 权限。",
   Readiness: "就绪度",
   "Ready for a first run": "可以开始第一次生成",
   "Ready to preview": "可以预览",
@@ -1480,7 +1472,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Recent runs and technical lineage": "最近批次与技术链路",
   "Reclaim Voice request": "回收语音请求",
   "Reclaim expired Voice request": "回收已过期的语音请求",
-  "Recommendation:": "建议：",
   "Reconcile review": "核对审核",
   "Reconcile selection": "核对选择",
   "Release change summary": "发布变更摘要",
@@ -1510,7 +1501,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Release candidate": "候选发布版本",
   "Release checklist": "发布检查清单",
   "Release history": "版本历史",
-  "Release monitoring": "发布监控",
   "Release preparation is incomplete": "发布准备尚未完成",
   "Release readiness": "发布就绪度",
   "Release validation passed, but the live image pack is still {completed}/{total}. Missing: {missing}":
@@ -1649,7 +1639,6 @@ export const adminZhCharacters: Record<string, string> = {
   "System default voice": "系统默认声音",
   "Creating a candidate keeps the current voice unchanged. Listen before activation; activation affects newly generated speech.": "创建候选不会改变当前音色。请先试听再启用；启用后仅影响新生成的语音。",
   "Official English Pocket TTS voice": "Pocket TTS 官方英语音色",
-  "Current voice": "当前声音",
   "Change voice": "更换声音",
   "Pick a model, then a voice. Changes only affect speech generated afterwards.":
     "先选模型，再选声音。更换只影响之后新生成的语音。",
@@ -1901,7 +1890,6 @@ export const adminZhCharacters: Record<string, string> = {
     "视频已拒绝，不可变审核记录已保留在生产批次历史中。",
   "Video review": "视频审核",
   "Video review could not be saved": "视频审核保存失败",
-  "Images usable as video sources": "可用作视频源的图片",
   Videos: "视频",
   "View all": "查看全部",
   "View candidate {number}": "查看候选图 {number}",
@@ -2105,7 +2093,6 @@ export const adminZhCharacters: Record<string, string> = {
   "{seconds} seconds · {fps} fps": "{seconds} 秒 · {fps} 帧/秒",
   "{value}% intensity": "强度 {value}%",
   "{width}×{height} · {orientation}": "{width}×{height} · {orientation}",
-  "Character profile and status": "角色资料与状态",
   "Automated preflight": "自动发布校验",
   "Complete the current image pack before publishing.":
     "请先补齐当前图片资产包再发布。",
@@ -2127,14 +2114,9 @@ export const adminZhCharacters: Record<string, string> = {
   "All videos for {name}": "{name} 的全部视频",
   "Character images could not be loaded": "无法加载角色图片",
   "Character video library": "角色视频素材库",
-  "Character cards and primary portrait": "角色卡片与主肖像",
-  "Character detail hero image": "角色详情页主视觉",
-  "Conversation scene image": "聊天场景图片",
   Conflict: "存在冲突",
   Current: "当前使用",
-  "Choose {placement} image": "选择{placement}图片",
   "Choose image": "选择图片",
-  "Choose where existing images appear": "选择现有图片的展示位置",
   "Close creator": "关闭创作器",
   Cover: "封面",
   "Create or import the first image for this Character.":
@@ -2233,10 +2215,7 @@ export const adminZhCharacters: Record<string, string> = {
   "This choice defines the face used for future image creation. You can create more candidates before choosing.":
     "这个选择会定义后续图片创作使用的角色面孔；你也可以先创作更多候选图。",
   "Use image": "使用图片",
-  "Use image for {placement}": "将图片用于{placement}",
   "Use this image as the Character identity?": "将这张图片设为角色身份吗？",
-  "Used in another placement": "已用于其他展示位",
-  "{name} {placement}": "{name} 的{placement}",
   "There are no unpublished changes. Nothing needs review or release.":
     "当前没有未发布更改，无需检查或发布。",
   "This live Character has no exposure or funnel events after the 7-day observation window.":
@@ -2272,7 +2251,6 @@ export const adminZhCharacters: Record<string, string> = {
     "表现权威已把这个角色的漏斗事实标记为不可信，这些数字不能用来做决定。",
   "Contribution margin is invalid until captured cash, refund, credit, and character attribution authorities are available.":
     "在收款、退款、赠币与角色归因四个权威齐备之前，贡献毛利不可用于决策。",
-  "Persona & appearance": "人设与外观",
   "Short description": "一句话简介",
   "Write a one-line description.": "写一句话简介。",
   "Give the character a name, short description, and opening message.": "填写角色名称、一句话简介和开场白。",
@@ -2284,12 +2262,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Saved changes are not live yet. Customers still see the published version.": "保存的改动还没上线，用户看到的仍是已发布的版本。",
   "Go to Release": "去发布",
   "Tags could not be saved": "标签未能保存",
-  "Image imported. Choose a display placement.": "图片已导入，可选择它的展示位置。",
-  "Image imported. Establish an identity to use it in a display placement.": "图片已导入。建立视觉身份后可选择展示位置。",
-  "Images used as the cover, hero or chat image must be replaced first.": "正在用作封面、头图或聊天图的图片需要先替换。",
   "Replace this image in its placement above before removing it.": "请先在上方的展示位置里替换这张图片，再移除。",
   "Generate here or import images made elsewhere. The placements above choose from this library.": "在这里生成，或导入别处做好的图片；上方的展示位置从这个图库里选图。",
-  "Each placement uses an image from this Character's library below.": "每个展示位置都从下方这个角色的图库里选图。",
   "Enter valid character details.": "请填写有效的角色补充设定。",
   "Select a supported gender.": "请选择有效的性别。",
   "Select a supported visual style.": "请选择有效的视觉风格。",
@@ -2409,5 +2383,88 @@ export const adminZhCharacters: Record<string, string> = {
   "The recovered Run receipt does not contain this Character workspace's exact request.": "恢复的任务回执不包含此角色工作台的原始请求。",
   "The generation request does not match this Character workspace.": "生成请求与此角色工作台不符。",
   "The generation request has no durable intent.": "生成请求缺少可恢复的原始记录。",
+  // F5: 绕过 Release、立即生效的改动在动作处与发布页标明；全平台默认声音迁到平台配置页。
+  "Takes effect immediately for new conversations. Not part of a Release.": "立即对新会话生效，不随发布。",
+  "Current live voice": "当前线上声音",
+  "Live now": "线上生效中",
+  "Uses the system default voice": "使用系统默认声音",
+  "Characters without their own voice use the system default voice": "没有自定义声音的角色使用系统默认声音",
+  "System default voices apply to every character and are managed on the platform configuration page, not here.": "系统默认声音作用于所有角色，在平台配置页管理，不在这里修改。",
+  "Open system voice defaults": "打开系统默认声音",
+  "Live without a Release": "不随发布、已在线上生效的改动",
+  "Publishing does not include these changes. They are already live: {effect}": "发布不包含以下改动，它们已在线上生效：{effect}",
+  "Activating a voice or switching back to the system default changes it right away.": "激活声音或改回系统默认声音，都会立即改变线上声音。",
+  "Open Voice": "打开声音",
+  "Chat media": "聊天素材",
+  "Use in chat and Withdraw from chat change what live chats can send right away.": "「用于聊天」和「从聊天撤下」会立即改变线上聊天可发送的素材。",
+  "Open image chat media": "打开图片聊天素材",
+  "Open video chat media": "打开视频聊天素材",
+  "Started a pre-generation pack of {count} items.": "已启动素材预生成，共 {count} 项。",
+  "Choose 1–10 Character images (1 video clip per image) under visual identity v{version}.": "从角色图片中选择 1–10 张（每张生成 1 段视频），使用视觉身份 v{version}。",
+  "Character video packs always use the default video production route.": "角色视频包固定使用默认的视频生产线路。",
+  "No qualified, unexpired image route is available. Qualify a generation route in Visual identity first.": "没有合格且未过期的图片线路。请先在视觉身份中完成生成线路认证。",
+  "This Character has no available images to animate yet.": "这个角色还没有可用来生成视频的图片。",
+  "Source images ({selected} of up to {max} selected)": "源图（已选 {selected} 张，最多 {max} 张）",
+  "Retry happens on the Run page, which keeps the retry command's idempotency record so a refresh or second click cannot start another paid generation. To change the source or brief, create a new video here instead.": "重试在生产批次页进行：那里保存着重试命令的幂等记录，刷新或再次点击都不会多发起一次付费生成。如需更换源图或动作描述，请直接在这里新建视频。",
 
+  // SPEC: 角色详情工作区按运营心智分组：概览 ｜ 设定 ｜ 素材 ｜ 上线。
+  "Appearance & identity": "外观与身份",
+  "Setup": "设定",
+  "Go live": "上线",
+  "Character profile": "角色资料",
+  "Tags and chat tools": "标签与聊天工具",
+  "Each setting saves on its own. It is not part of the persona draft or a Release.":
+    "每项设置单独保存，不属于人设草稿，也不随发布版本上线。",
+  "Release health": "发布健康",
+  "Whether the live release is serving correctly. Its suggestions concern the release itself.":
+    "线上发布版本是否在正常服务；这里的建议只针对该版本本身。",
+  "Release action:": "发布处置：",
+  "Business performance and recommendation": "经营表现与建议",
+  "How customers respond compared with similar characters. Its suggestions concern exposure and lifecycle.":
+    "与同类角色相比顾客的反应；这里的建议关乎曝光与上下线取舍。",
+  // SPEC: 「长什么样」—— 人设里的创建时外观描述折叠只读，身份与形象在「外观与身份」管理。
+  "Appearance written at creation": "创建时的外观描述",
+  "Read-only": "只读",
+  "The look is locked to the current portrait. Image generation uses the description written when the look was changed, not this text.":
+    "形象已锁定为当前肖像。生图使用更换形象时写下的描述，不再使用这段文字。",
+  "The look is locked to the current portrait. Image generation still reads this text, but it can no longer be edited.":
+    "形象已锁定为当前肖像。生图仍会读取这段文字，但已不能编辑。",
+  "Open Appearance & identity": "打开外观与身份",
+  "Change appearance (new identity)": "更换形象（建立新身份）",
+  "This character has no identity yet. Create and choose the first portrait in Images; it becomes the identity.":
+    "这个角色还没有身份。请在「图片」中生成并选定第一张肖像，它会成为角色身份。",
+  "Not ready for image production · Next: {action}": "尚不能生产图片 · 下一步：{action}",
+  "Not ready for image production.": "尚不能生产图片。",
+  "Show details and fix": "展开详情并修复",
+  "Customer saved looks using role images": "用户保存的造型（引用角色图片）",
+  // SPEC: 展示图（display image）术语：名称只来自 character-asset-studio-authority.ts 的 purposeConfig。
+  "Display images": "展示图",
+  "The release could not go live. The candidate was withdrawn and the draft can be edited again.": "本次发布未能上线，候选已撤回，草稿可以继续编辑。",
+  "The last publish attempt could not go live and the candidate was withdrawn. The draft can be edited; publish again, and contact engineering with the code below if it repeats.": "上次发布未能上线，候选已撤回，草稿可以编辑；可以重新发布，如反复出现请把下方代码交给工程排查。",
+  "This draft already exists. Manage its tags on the Persona tab after saving.": "该草稿已创建。保存后请在「人设」页管理标签。",
+  "The chat media index is not configured, so media cannot be used in chat yet. Save the description as a draft for now.": "聊天素材索引尚未配置，暂时不能用于聊天；可以先把描述保存为草稿。",
+  "The chat media index is not configured, so nothing was enabled.": "聊天素材索引尚未配置，本次没有启用任何素材。",
+  "The saved draft is unchanged. Configure the media index, then use it in chat.": "已保存的草稿保持不变。配置媒体索引后再用于聊天。",
+  "The last publish attempt failed its release checks. The candidate was withdrawn and the draft can be edited; fix the items below and publish again.": "上次发布未通过发布检查，候选已撤回，草稿可以编辑；修复下列项目后重新发布。",
+  "Avatar image": "头像图片",
+  "Use as primary portrait": "用作主肖像",
+  "Use as character hero": "用作角色主视觉",
+  "Use as chat moment": "用作聊天场景图",
+  "Each display image uses an image from this Character's library below.":
+    "每张展示图都从下方这个角色的图片库中选择。",
+  "{name} {slot}": "{name} {slot}",
+  "Choose image for {slot}": "为{slot}选择图片",
+  "Use image for {slot}": "将图片用作{slot}",
+  "Used for another display image": "已用作其他展示图",
+  "Used as {slots}": "已用作 {slots}",
+  "Image imported. Establish an identity to use it as a display image.":
+    "图片已导入。建立身份后才能用作展示图。",
+  "Image imported. Choose which display image it fills.": "图片已导入。请选择它用作哪张展示图。",
+  "An image used as a display image must be replaced first.": "正在用作展示图的图片需要先替换。",
+  "If any of these images is in use, none will be removed. Replace it as a display image first.":
+    "只要其中有一张正在用作展示图，就不会移除任何图片。请先替换对应展示图。",
+  "Replace this display image before removing it.": "请先替换这张展示图，再移除它。",
+  "At least one of these images is in use as a display image, so none were removed. Replace it first.":
+    "其中有图片正在用作展示图，因此没有移除任何图片。请先替换它。",
+  "Create or import images for this Character’s display images.": "为这个角色的展示图创建或导入图片。",
 };

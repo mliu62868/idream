@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { CharacterWorkspaceDetail, CreativeRunDetail } from "@idream/shared/admin";
 import Link from "next/link";
-import { FailureReason } from "@/components/admin/generation/FailureReason";
+import { GenerationRunFailure } from "@/components/admin/generation/GenerationRunFailure";
 import {
   candidateState,
   characterAssetReadinessSummary,
@@ -298,22 +298,10 @@ export function CandidateBatchGrid({
           {activeUnconfirmed.operationsHref ? <Link className="mt-2 inline-block font-semibold underline" href={activeUnconfirmed.operationsHref}>{t("Open generation task")}</Link> : null}
         </div>
       ) : activeItem?.executionState === "failed" ? (
-        <div
-          className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]"
-          role="alert"
-        >
-          <FailureReason code={activeItem.failure?.errorCode} />
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            {runId ? (
-              <Link
-                className="font-semibold underline"
-                href={`/admin/creative/runs/${encodeURIComponent(runId)}`}
-              >
-                {t("Open run details")}
-              </Link>
-            ) : null}
-          </div>
-        </div>
+        <GenerationRunFailure
+          errorCode={activeItem.failure?.errorCode}
+          runHref={runId ? `/admin/creative/runs/${encodeURIComponent(runId)}` : null}
+        />
       ) : null}
     </div>
   );

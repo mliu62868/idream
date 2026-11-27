@@ -248,6 +248,50 @@ describe("content merchandising commands", () => {
     expect(links.map((link) => link.tag.label)).toEqual(["Elf"]);
   });
 
+  it("rejects a tag replacement whose expected set is stale, and keeps the legacy unconditional write", async () => {
+    // SPEC: 批量打标签「先读再整组 PUT」。带 expectedTagIds 时，读后被别人改过就 409，不静默覆盖。
+    const characterId = `${P}tags-cas`;
+    await createCharacter({
+      id: characterId,
+      creatorId: actorId,
+      source: "official",
+      name: "Tag CAS",
+      visibility: "public",
+      status: "approved",
+    });
+    const first = await prisma.tag.create({ data: { slug: `${P}cas-first`, label: "Cas First" } });
+    const second = await prisma.tag.create({ data: { slug: `${P}cas-second`, label: "Cas Second" } });
+    expectOk(await tagsCommand(characterId, `${P}tags-cas-1`, {
+      tagIds: [first.id],
+      expectedTagIds: [],
+      confirmation: `${characterId}:tags`,
+    }));
+    // 另一个写入者在读之后加了 second。
+    expectOk(await tagsCommand(characterId, `${P}tags-cas-2`, {
+      tagIds: [second.id, first.id],
+      confirmation: `${characterId}:tags`,
+    }));
+    const stale = await tagsCommand(characterId, `${P}tags-cas-3`, {
+      tagIds: [],
+      expectedTagIds: [first.id],
+      confirmation: `${characterId}:tags`,
+    });
+    expectError(stale, 409, "conflict");
+    expect(stale.error?.details).toMatchObject({
+      blocker: "version_mismatch",
+      currentTagIds: [first.id, second.id].sort(),
+    });
+    expect(await prisma.characterTag.count({ where: { characterId } })).toBe(2);
+    // 前提与当前集合一致（顺序无关）时照常替换。
+    expectOk(await tagsCommand(characterId, `${P}tags-cas-4`, {
+      tagIds: [second.id],
+      expectedTagIds: [second.id, first.id],
+      confirmation: `${characterId}:tags`,
+    }));
+    const links = await prisma.characterTag.findMany({ where: { characterId } });
+    expect(links.map((link) => link.tagId)).toEqual([second.id]);
+  });
+
   it("refuses unknown tags and mismatched confirmation", async () => {
     const characterId = `${P}tags-guard`;
     await createCharacter({

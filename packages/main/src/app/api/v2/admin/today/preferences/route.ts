@@ -16,6 +16,7 @@ function requiredIfMatch(request: Request) {
 export function PUT(request: Request) {
   return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "dashboard.read");
+    // A Character-scoped creative.run.read stays in the set; `updateOperationalWorkPreference` checks the Run's Character.
     const permissions = await effectivePermissions(actor.id, actor.role);
     const body = await jsonBody(request, "operationalWorkPreferenceUpdateSchema+if-match");
     const expectedVersion = requiredIfMatch(request);

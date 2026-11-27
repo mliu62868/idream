@@ -60,6 +60,7 @@ type Actor = {
 type AdminConsoleClientProps = {
   actor: Actor | null;
   canCreateCharacters?: boolean;
+  canAssistCharacterDrafts?: boolean;
   initialSection: string;
   initialAccess: boolean;
   initialPermissions: AdminPermissionKey[];
@@ -161,6 +162,7 @@ function SoulDraftNavigationGuard({ actorId }: { actorId: string }) {
 function AdminConsoleContent({
   actor: initialActor,
   canCreateCharacters: initialCanCreateCharacters = false,
+  canAssistCharacterDrafts: initialCanAssistCharacterDrafts = false,
   initialAccess,
   initialPermissions,
   path,
@@ -179,8 +181,8 @@ function AdminConsoleContent({
   const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activeItem = path.item;
   const sectionId = activeItem.id;
-  const authority = useAdminAuthority({ actor: initialActor, permissions: initialPermissions, canCreateCharacters: initialCanCreateCharacters });
-  const { actor, canCreateCharacters } = authority;
+  const authority = useAdminAuthority({ actor: initialActor, permissions: initialPermissions, canCreateCharacters: initialCanCreateCharacters, canAssistCharacterDrafts: initialCanAssistCharacterDrafts });
+  const { actor, canCreateCharacters, canAssistCharacterDrafts } = authority;
   const permissions = useMemo(() => new Set(authority.permissions), [authority.permissions]);
   useEffect(() => {
     // Broadcast only after the fresh permission props have committed to the workspace.
@@ -449,6 +451,7 @@ function AdminConsoleContent({
                 {renderAdminSection(activeItem.id, {
                   actorId: actor.id,
                   canCreateCharacters,
+                  canAssistCharacterDrafts,
                   canRead: canReadWorkspace(activeItem, sectionPermissions),
                   permissions: sectionGrants,
                   view: path.view,

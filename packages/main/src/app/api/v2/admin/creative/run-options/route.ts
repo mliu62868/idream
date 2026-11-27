@@ -9,7 +9,9 @@ export const runtime = "nodejs";
 
 export function GET(request: Request) {
   return adminV2Route(request, async () => {
-    const actor = await actorWithPermission(request, "creative.run.read");
+    // INTENT: the create options are the generation route / recipe catalog, not Character data;
+    //         a scoped creator needs them to generate for an assigned Character.
+    const actor = await actorWithPermission(request, "creative.run.read", { characterScope: "handler_enforced" });
     return ok(creativeRunCreateOptionsSchema.parse(
       await getCreativeRunCreateOptions({ actor }),
     ));

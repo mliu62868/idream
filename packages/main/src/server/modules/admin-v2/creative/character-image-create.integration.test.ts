@@ -26,6 +26,8 @@ import { PATCH as patchContentAssetRoute } from "@/app/api/v2/admin/assets/[id]/
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
 import { recordCreativeReviewDecision } from "./review-decision";
 import { getCreativeRunDetail } from "./run-read";
+import { estimateCreativeRunCost } from "./run-pricing";
+import { loadCharacterImageGenerationEstimates } from "@/server/modules/admin-v2/characters/workspace-generation-profiles";
 
 const { version: imageEditWorkflowVersion }: { version: number } = JSON.parse(
   readFileSync(new URL("../../../../../../gen/workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8"),
@@ -643,6 +645,7 @@ describe("Character image Creative Run authority", () => {
     const detail = await getCreativeRunDetail({
       runId: batchId,
       actor: { id: actorId, role: "admin" },
+      characterScope: null,
     });
     expect(detail.items[0]?.asset?.automaticComposition).toEqual({
       evaluatorVersion: "generated-image-sanity-v2",
@@ -1351,6 +1354,41 @@ describe("Character image Creative Run authority", () => {
       await expect(submitRun({ ...payload, runCount: runCount === 2 ? 4 : 2 }, key)).resolves.toMatchObject({ status: 409 });
     } finally {
       await cleanupBatches(runIds);
+    }
+  });
+
+  it("records the same per-image cost that the workspace estimate showed before submit", async () => {
+    // A fractional profile multiplier makes the per-image rounding observable.
+    await prisma.generationModelProfile.update({ where: { id: profileId }, data: { costMultiplier: 1.37 } });
+    const runCount = 2;
+    const payload = { ...raceRunPayload("Manual Hero priced group"), runCount };
+    let runIds: string[] = [];
+    try {
+      const [estimate] = await loadCharacterImageGenerationEstimates([profileKey]);
+      expect(estimate).toMatchObject({ profileKey, perItemCostDreamcoins: expect.any(Number) });
+      const formEstimate = await estimateCreativeRunCost({ profileId: profileKey, count: runCount });
+      expect(formEstimate).toEqual({
+        perItemCostDreamcoins: estimate.perItemCostDreamcoins,
+        totalCostDreamcoins: estimate.perItemCostDreamcoins * runCount,
+      });
+
+      const created = await submitRun(payload, `manual-priced-group-${suffix}`);
+      expect(created.status, JSON.stringify(created.body)).toBe(202);
+      runIds = (created.body.data as { runIds: string[] }).runIds;
+      const runs = await prisma.contentProductionBatch.findMany({
+        where: { id: { in: runIds } },
+        include: { items: { include: { job: true } } },
+      });
+      expect(runs).toHaveLength(runCount);
+      for (const run of runs) {
+        expect(run.estimatedCostDreamcoins).toBe(estimate.perItemCostDreamcoins);
+        expect(run.items.map((item) => item.job?.costDreamcoins)).toEqual([estimate.perItemCostDreamcoins]);
+      }
+      expect(runs.reduce((sum, run) => sum + run.estimatedCostDreamcoins, 0))
+        .toBe(formEstimate.totalCostDreamcoins);
+    } finally {
+      await prisma.generationModelProfile.update({ where: { id: profileId }, data: { costMultiplier: 1 } });
+      if (runIds.length > 0) await cleanupBatches(runIds);
     }
   });
 

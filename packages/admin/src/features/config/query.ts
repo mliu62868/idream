@@ -1,3 +1,6 @@
+/** voice = 全平台默认声音；它自己读写，不参与搜索 / 分页。 */
+export type GenerationConfigTab = "profiles" | "settings" | "voice";
+
 export type GenerationConfigQuery = {
   search: string;
   profileMode: string;
@@ -5,7 +8,7 @@ export type GenerationConfigQuery = {
   flagEnabled: string;
   profileCursor: string;
   flagCursor: string;
-  tab: "profiles" | "settings";
+  tab: GenerationConfigTab;
 };
 
 /** 分页条要报「第 N–M 条」，算法需要每页条数，所以它不能只活在 URL 拼接里。 */
@@ -30,7 +33,7 @@ export function generationConfigQueryFromSearch(search: string): GenerationConfi
     flagEnabled: params.get("flagEnabled") ?? "",
     profileCursor: params.get("profileCursor") ?? "",
     flagCursor: params.get("flagCursor") ?? "",
-    tab: params.get("tab") === "settings" ? "settings" : "profiles",
+    tab: params.get("tab") === "settings" ? "settings" : params.get("tab") === "voice" ? "voice" : "profiles",
   };
 }
 
@@ -61,7 +64,7 @@ export function generationConfigWorkspaceUrl(pathname: string, search: string, q
   setOrDelete(params, "flagEnabled", query.flagEnabled);
   setOrDelete(params, "profileCursor", query.profileCursor);
   setOrDelete(params, "flagCursor", query.flagCursor);
-  setOrDelete(params, "tab", query.tab === "settings" ? "settings" : "");
+  setOrDelete(params, "tab", query.tab === "profiles" ? "" : query.tab);
   const serialized = params.toString();
   return serialized ? `${pathname}?${serialized}` : pathname;
 }

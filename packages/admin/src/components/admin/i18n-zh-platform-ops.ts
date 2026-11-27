@@ -770,8 +770,6 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Test Image": "测试出图",
   "Test and publish": "测试和发布",
   "Test and publish generation profiles": "测试并发布生成配置",
-  "Test generation profiles, publish proven versions, and roll feature flags through audited control-plane commands.":
-    "测试生成配置档案、发布已验证版本，并通过审计的控制面命令逐步放量功能开关。",
   "Test image failed": "测试出图失败",
   "Test image prompt": "测试图片提示词",
   "Test image queued": "测试出图已排队",
@@ -1430,5 +1428,13 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Run the saved sample matrix before verifying results.": "核验结果前请先运行已保存的样本矩阵。",
   "Recipe inputs changed after preview. Refresh before verifying results.": "预览后配方输入已改变，请刷新后再核验结果。",
   "Every saved matrix sample needs a verified generated output and library delivery.": "每个已保存的矩阵样本都需要已核验的生成产物和素材库交付。",
+  // F5: 绕过 Release、立即生效的改动在动作处与发布页标明；全平台默认声音迁到平台配置页。
+  "Test generation profiles, publish proven versions, roll feature flags, and set the system voice defaults through audited control-plane commands.": "测试生成配置档案、发布已验证版本、逐步放量功能开关，并设置系统默认声音，全部经由审计的控制面命令完成。",
+  "Voice defaults": "默认声音",
+  "Inherited by every character": "所有角色继承",
+  "Loading system voice defaults…": "正在加载系统默认声音…",
+  "This is a platform-wide setting. It changes new speech for every character that has no voice override.": "这是全平台设置，会改变所有没有自定义声音的角色此后生成的语音。",
+  "New conversations of every inheriting character use the saved mapping right away. It does not go through a Character Release.": "所有继承默认声音的角色，新会话会立即使用保存后的映射，不经过角色发布。",
+  "Every character without its own voice inherits these voices. A saved change applies to new conversations right away and does not go through a Character Release.": "没有自定义声音的角色都继承这些声音。保存后立即对新会话生效，不经过角色发布。",
 
 };

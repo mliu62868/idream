@@ -259,6 +259,7 @@ describe("remaining Admin inventory provenance", () => {
     const runs = await listCreativeRuns({
       requestUrl: `http://localhost/api/v2/admin/creative/runs?search=${prefix}&limit=100`,
       actor: { id: actorId, role: "admin" },
+      characterScope: null,
     });
     expect(ids(runs.items)).toEqual(
       new Set([batchIds.customer, batchIds.internal]),
@@ -267,6 +268,7 @@ describe("remaining Admin inventory provenance", () => {
       getCreativeRunDetail({
         runId: batchIds.fixture,
         actor: { id: actorId, role: "admin" },
+        characterScope: null,
       }),
     ).rejects.toMatchObject({ status: 404 });
   });

@@ -208,41 +208,63 @@ describe("customer shared Character publication", () => {
     await ensureOperationalGenerationRoute(prisma, { style: "realistic", policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION, at: new Date(), requiredReferenceCount: 1, requiredReferenceRoles: ["primary_face"] });
     const project = () => prisma.characterProject.findFirstOrThrow({ where: { characterId: fixture.characterId } });
+    const operatorUpload = (assetId: string) => prisma.mediaAsset.create({ data: {
+      id: assetId, ownerId: fixture.userId, characterId: fixture.characterId, type: "image", visibility: "private", safetyStatus: "passed",
+      url: `/assets/${assetId}.png`, storageKey: `${assetId}.png`, metadata: {
+        source: "admin_asset_upload", sha256: "a".repeat(64), platformAsset: { status: "draft", purpose: "character_library" },
+        uploadAuthority: { schemaVersion: "platform-asset-operator-upload-v1", kind: "operator_upload", assetId, uploadedById: fixture.userId, sha256: "a".repeat(64) },
+      },
+    } });
     for (const purpose of ["character_cover", "character_hero", "character_chat"] as const) {
       const assetId = purpose === "character_cover" ? fixture.asset.id : `${fixture.userId}-${purpose}`;
-      if (purpose !== "character_cover") await prisma.mediaAsset.create({ data: {
-        id: assetId, ownerId: fixture.userId, characterId: fixture.characterId, type: "image", visibility: "private", safetyStatus: "passed",
-        url: `/assets/${assetId}.png`, storageKey: `${assetId}.png`, metadata: {
-          source: "admin_asset_upload", sha256: "a".repeat(64), platformAsset: { status: "draft", purpose: "character_library" },
-          uploadAuthority: { schemaVersion: "platform-asset-operator-upload-v1", kind: "operator_upload", assetId, uploadedById: fixture.userId, sha256: "a".repeat(64) },
-        },
-      } });
+      if (purpose !== "character_cover") await operatorUpload(assetId);
       await selectCharacterDraftImage({ characterId: fixture.characterId, assetId, purpose, expectedProjectVersion: (await project()).version,
         actor, requestId: randomUUID(), reason: "Select three authorized distinct images" });
     }
-    const candidate = await createCharacterRelease({ request: new Request("http://localhost"), characterId: fixture.characterId,
+    const firstCandidate = await createCharacterRelease({ request: new Request("http://localhost"), characterId: fixture.characterId,
       expectedProjectVersion: (await project()).version, actor, reason: "Publish customer-selected identity" });
-    expect(candidate).toMatchObject({ status: "approved", readiness: "ready" });
-    expect(candidate.generationProvenance).toMatchObject({ placements: [expect.objectContaining({
+    expect(firstCandidate).toMatchObject({ status: "approved", readiness: "ready" });
+    expect(firstCandidate.generationProvenance).toMatchObject({ placements: [expect.objectContaining({
       generationJobId: fixture.job.id, attemptId: fixture.attempt.id, jobCharacterId: null,
       visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, workflowVersion: 3,
       generationProfileVersion: 6, customerIdentityRevisionId: expect.any(String),
     })] });
-    await prisma.$queryRaw`SELECT true FROM (SELECT assert_character_release_asset_manifest_v2(${JSON.stringify(candidate.releasePlacementManifest)}::jsonb)) AS checked`;
-    const evaluate = () => prisma.$transaction(tx => evaluateCharacterReleaseSnapshot(tx, candidate, CHARACTER_RELEASE_POLICY_VERSION, new Date()));
+    await prisma.$queryRaw`SELECT true FROM (SELECT assert_character_release_asset_manifest_v2(${JSON.stringify(firstCandidate.releasePlacementManifest)}::jsonb)) AS checked`;
+    const evaluate = () => prisma.$transaction(tx => evaluateCharacterReleaseSnapshot(tx, firstCandidate, CHARACTER_RELEASE_POLICY_VERSION, new Date()));
     const shared = await evaluate(); expect(shared.failed).toEqual([]);
     await prisma.character.update({ where: { id: fixture.characterId }, data: { visibility: "private" } });
     expect((await evaluate()).failed.map(check => check.key)).toContain("release_asset_source_authority");
     const accepted = await acceptControlPlaneCommand(prisma, { environment: "test", actor, idempotencyKey: randomUUID(),
-      commandType: "character.release.publish", target: { type: "character_release", id: candidate.id }, expectedVersion: candidate.version,
+      commandType: "character.release.publish", target: { type: "character_release", id: firstCandidate.id }, expectedVersion: firstCandidate.version,
       payload: { reason: "Publish revoked sharing" }, retryMode: "idempotent", reason: "Publish revoked sharing", requestId: randomUUID() });
-    expect(await executeCharacterReleaseCommand(prisma, { commandId: accepted.commandId, workerId: fixture.userId })).toMatchObject({ status: "failed" });
+    expect(await executeCharacterReleaseCommand(prisma, { commandId: accepted.commandId, workerId: fixture.userId })).toMatchObject({ status: "failed", errorCode: "release_validation_failed" });
     expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId: fixture.characterId } })).toMatchObject({ state: "inactive", currentReleaseId: null });
     expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: fixture.asset.id } })).toMatchObject({ visibility: "private" });
+    // SPEC: 校验失败的候选不可能上线，同一事务里撤回；草稿立即解冻，失败证据保留 blockers 与 validationRunId。
+    expect(await prisma.characterRelease.findUniqueOrThrow({ where: { id: firstCandidate.id } })).toMatchObject({
+      status: "withdrawn", readiness: "blocked", publishedAt: null, version: firstCandidate.version + 1,
+    });
+    const failedCommand = await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: accepted.commandId } });
+    expect(failedCommand).toMatchObject({ status: "failed", error: {
+      code: "release_validation_failed", blockers: expect.arrayContaining(["release_asset_source_authority"]),
+      validationRunId: expect.any(String), candidateWithdrawn: true, withdrawnReleaseId: firstCandidate.id,
+    } });
+    expect(await prisma.characterReleaseEvent.findFirstOrThrow({ where: { releaseId: firstCandidate.id, type: "character.release.withdrawn" } }))
+      .toMatchObject({ commandId: accepted.commandId, toState: { releaseStatus: "withdrawn" } });
+    expect(await prisma.adminAuditLog.findFirstOrThrow({ where: { requestId: accepted.commandId, action: "character.release.withdraw.automatic" } }))
+      .toMatchObject({ targetType: "character_release", targetId: firstCandidate.id });
     await prisma.character.update({ where: { id: fixture.characterId }, data: { visibility: "public" } });
-    const approved = await prisma.characterRelease.findUniqueOrThrow({ where: { id: candidate.id } });
+    // 草稿编辑不再被候选冻结：换一张 hero 图直接成功。
+    const replacementHeroId = `${fixture.userId}-character_hero-after-withdrawal`;
+    await operatorUpload(replacementHeroId);
+    await selectCharacterDraftImage({ characterId: fixture.characterId, assetId: replacementHeroId, purpose: "character_hero",
+      expectedProjectVersion: (await project()).version, actor, requestId: randomUUID(), reason: "Edit the draft after the failed candidate was withdrawn" });
+    const candidate = await createCharacterRelease({ request: new Request("http://localhost"), characterId: fixture.characterId,
+      expectedProjectVersion: (await project()).version, actor, reason: "Publish customer-selected identity again" });
+    expect(candidate).toMatchObject({ status: "approved", readiness: "ready" });
+    expect(candidate.id).not.toBe(firstCandidate.id);
     const publish = await acceptControlPlaneCommand(prisma, { environment: "test", actor, idempotencyKey: randomUUID(),
-      commandType: "character.release.publish", target: { type: "character_release", id: candidate.id }, expectedVersion: approved.version,
+      commandType: "character.release.publish", target: { type: "character_release", id: candidate.id }, expectedVersion: candidate.version,
       payload: { reason: "Publish authorized identity" }, retryMode: "idempotent", reason: "Publish authorized identity", requestId: randomUUID() });
     expect(await executeCharacterReleaseCommand(prisma, { commandId: publish.commandId, workerId: fixture.userId })).toMatchObject({ status: "succeeded" });
     expect(await prisma.characterServing.findUniqueOrThrow({ where: { characterId: fixture.characterId } })).toMatchObject({ state: "live", currentReleaseId: candidate.id });

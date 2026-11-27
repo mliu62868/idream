@@ -51,6 +51,7 @@
 - Character Project 更新使用 `If-Match` + body `entityVersion` 做 compare-and-swap；
 - 采用只更新草稿，不直接修改 live Character；
 - 待发布 candidate Release 存在时禁止改写草稿资产包；可通过有审计的 withdraw 放弃候选后编辑。
+- publish 时校验失败的候选不可能上线，executor 在同一事务内把它转为 `withdrawn`（与人工 withdraw 同一审计与事件），失败证据保留 blockers 与 validation run；草稿随即解冻，修复后重新发布会生成新候选。只作用于未上线候选，不影响当前 Serving Release。（2026-11-26 决定：冻结的唯一目的是保证「确认的即上线的」，校验失败后冻结没有价值，只会迫使运营先放弃候选再修复。）
 
 ### 3.3 发布
 
@@ -159,7 +160,7 @@ API manifest 与 Zod 契约的单一事实来源：
 | Asset 不属于 Item 或不可用 | fail closed |
 | Character Project version 过期 | conflict，客户端刷新后重试 |
 | active candidate Release 已存在 | conflict，先处理 Release |
-| proposal 后文件或来源失效 | validation failed，可放弃候选后修复并重建 |
+| proposal 后文件或来源失效 | validation failed，候选自动 withdrawn，草稿可直接修复后重新发布 |
 | 生成部分失败 | 保留成功 Item，可直接选择采用；失败项不冒充成功 |
 
 ## 9. 关键实现位置

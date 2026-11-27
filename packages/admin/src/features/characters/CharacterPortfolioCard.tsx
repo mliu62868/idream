@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { withCharacterRoster } from "./portfolio-query";
 import { CharacterPortfolioVisual } from "./CharacterPortfolioVisual";
 import { characterPrimaryActionCopy } from "./character-primary-action-copy";
+import { characterLifecycleLabel } from "./character-lifecycle-copy";
 
 // SPEC: 线上/暂停/退役要分得清。暂停的角色线上没有人看得到，不能继续写 Live。
 export function characterReleasePackLabel(servingState: string) {
@@ -21,7 +22,7 @@ export function characterPortfolioState(item: CharacterPortfolioItem) {
   if (item.serving.state === "retired" || item.serving.state === "paused") {
     return {
       badge: "bg-[var(--ad-surface-subtle)] text-[var(--ad-text-muted)]",
-      label: item.serving.state === "paused" ? "Paused" : item.serving.currentReleaseId === null ? "Archived" : "Retired",
+      label: characterLifecycleLabel(item.serving),
       tone: "text-[var(--ad-text-muted)]",
     } as const;
   }

@@ -177,7 +177,14 @@ export const ADMIN_ROLE_PERMISSION_SCOPES: Partial<
   },
 };
 
+/**
+ * SPEC: 角色级权限包（scopes 非空）里的每一个权限默认只在被分配的角色上生效，
+ *       不论它是不是 `character.*` 前缀；Main 按 grant 行上的 characterIds 收窄。
+ * INTENT: `globalPermissions` 是唯一的例外表 —— 列出的权限即使来自角色级授予也是全局的。
+ *         只有本身就是全站动作（如精选的全站排序）的权限才放进去，必须写清理由。
+ */
 export const ADMIN_GRANT_BUNDLES = {
+  // SPEC: 生产者 = 创作者 + 发布。
   character_producer: {
     permissions: [
       "character.project.read",
@@ -185,22 +192,33 @@ export const ADMIN_GRANT_BUNDLES = {
       "character.release.read",
       "character.release.publish",
       "character.performance.read",
+      "creative.run.read",
+      "creative.run.write",
+      "content.official.write",
     ],
     scopes: { "character.performance.read": "assigned_characters" },
   },
-  // SPEC: 创作者可写角色并标记创作交接，但不能发布、回滚或暂停。
+  // SPEC: 创作者在被分配的角色上读图库、生图、上传、设身份、选展示图、换形象 / 参考集、
+  //       标记创作交接，但不能发布、回滚或暂停。
+  // INTENT: creative.run.* 与 content.official.write 的每个使用点都按 characterId 收窄
+  //         （没有 characterId 的全局入口对角色级授予一律拒绝或按范围过滤）。
   character_creator: {
     permissions: [
       "character.project.read",
       "character.project.write",
       "character.release.read",
       "character.performance.read",
+      "creative.run.read",
+      "creative.run.write",
+      "content.official.write",
     ],
     scopes: { "character.performance.read": "assigned_characters" },
   },
-  // SPEC: 发布运营管上线与分发。
-  // INTENT: 保留 character.project.write：选产品槽位（draft-image）与读图片库（image-sources）
-  //         现在只认它，拆掉就选不了图。与 character_producer 的差别在于精选。
+  // SPEC: 发布运营管上线与分发：读图库、选展示图、发布、管理精选；不生图。
+  // INTENT: 读图库（image-sources）要 character.project.read + creative.run.read；
+  //         选产品槽位（draft-image）要 character.project.write，所以两者都保留。
+  //         不给 creative.run.write：生图、上传与聊天素材写入都要它。
+  //         与 character_producer 的差别在于精选。
   character_publisher: {
     permissions: [
       "character.project.read",
@@ -208,10 +226,14 @@ export const ADMIN_GRANT_BUNDLES = {
       "character.release.read",
       "character.release.publish",
       "character.performance.read",
+      "creative.run.read",
       "content.read",
       "content.featured.write",
     ],
     scopes: { "character.performance.read": "assigned_characters" },
+    // INTENT: 精选是一份全站排序（单个 app setting），读写都没有角色维度；收窄到角色会让
+    //         发布运营完全无法管理精选。这是授予前就存在的全局能力，这里只是把它写明。
+    globalPermissions: ["content.read", "content.featured.write"],
   },
   creative_operator: {
     permissions: [
@@ -234,6 +256,7 @@ export const ADMIN_GRANT_BUNDLES = {
   {
     readonly permissions: readonly AdminPermissionKey[];
     readonly scopes: Partial<Record<AdminPermissionKey, AdminPermissionScope>>;
+    readonly globalPermissions?: readonly AdminPermissionKey[];
   }
 >;
 
@@ -246,6 +269,21 @@ export type AdminGrantBundleKey = keyof typeof ADMIN_GRANT_BUNDLES;
  */
 export function adminGrantBundleRequiresCharacterScope(bundleKey: AdminGrantBundleKey) {
   return Object.keys(ADMIN_GRANT_BUNDLES[bundleKey].scopes).length > 0;
+}
+
+/**
+ * SPEC: 这个包授予的 `permission` 是否只在 grant 行分配的角色上生效。
+ * INVARIANT: 角色级包里除 `globalPermissions` 外的权限一律按角色收窄，与前缀无关。
+ */
+export function adminGrantBundlePermissionIsCharacterScoped(
+  bundleKey: AdminGrantBundleKey,
+  permission: AdminPermissionKey,
+): boolean {
+  if (!adminGrantBundleRequiresCharacterScope(bundleKey)) return false;
+  const bundle = ADMIN_GRANT_BUNDLES[bundleKey];
+  const globalPermissions: readonly AdminPermissionKey[] =
+    "globalPermissions" in bundle ? bundle.globalPermissions : [];
+  return !globalPermissions.includes(permission);
 }
 
 export const adminPermissionOverrideSchema = z

@@ -8,7 +8,7 @@ import {
   type CharacterProductionJourney,
   type characterProductionActionCodeSchema,
 } from "@idream/shared/admin";
-import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
+import { effectiveCharacterScopes, effectivePermissions } from "@/server/admin/effective-permissions";
 import type { PermissionKey } from "@/server/admin/permissions";
 import type {
   CharacterProject,
@@ -581,24 +581,27 @@ export async function loadCharacterActionReadAccess(
     const authorization = ADMIN_V2_API_OPERATIONS_BY_ID[id].authorization;
     return authorization.kind === "all_of" ? [...authorization.permissions] : [];
   });
-  const characterPermissions = [...new Set([...permissionsForTarget, ...Object.values(ADMIN_COMMAND_TARGET_READ_PERMISSIONS)])]
-    .filter((permission) => permission.startsWith("character."));
-  const [permissions, scopeEntries, commands] = await Promise.all([
+  // SPEC: mirrors the authority seam — every permission is Character-scoped, not only `character.*`.
+  const commandTargetReads = Object.values(ADMIN_COMMAND_TARGET_READ_PERMISSIONS);
+  const commandReadPermissions = commandTargetReads.flatMap((permission) =>
+    resolveAdminV2ManifestAuthorization(ADMIN_V2_API_OPERATIONS_BY_ID[COMMAND_READ], permission) ?? []);
+  const scopedPermissions = [...new Set([...permissionsForTarget, ...commandTargetReads, ...commandReadPermissions])];
+  const [permissions, characterScopes, commands] = await Promise.all([
     effectivePermissions(actor.id, actor.role, db),
-    Promise.all(characterPermissions.map(async (permission) => [
-      permission, await effectiveCharacterIdsForPermission(actor.id, actor.role, permission),
-    ] as const)),
+    effectiveCharacterScopes(actor.id, actor.role, scopedPermissions),
     commandIds.length ? db.controlPlaneCommand.findMany({
       where: { id: { in: commandIds } }, select: { id: true, targetType: true, targetId: true, requestPayload: true },
     }) : [],
   ]);
-  const characterScopes = new Map<PermissionKey, ReadonlySet<string> | null>(scopeEntries);
   const commandScopes = await commandReadScopes(db, commands);
   const hasPermission = (permission: PermissionKey, characterId?: string) => {
     if (!permissions.has(permission)) return false;
-    if (!characterId || !permission.startsWith("character.")) return true;
+    // Every permission checked below is resolved above; an unresolved one stays closed.
+    if (!characterScopes.has(permission)) return false;
     const scope = characterScopes.get(permission);
-    return scope === null || scope?.has(characterId) === true;
+    if (scope === null) return true;
+    if (!characterId) return permission.startsWith("character.");
+    return scope?.has(characterId) === true;
   };
   return (characterId, operations, commandId) => operations.every((id) => {
     const operation = ADMIN_V2_API_OPERATIONS_BY_ID[id];

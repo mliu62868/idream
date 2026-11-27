@@ -57,32 +57,15 @@ export async function parseCharacterImageSourceForm(
   };
 }
 
-export async function listCharacterImageSources(input: {
-  characterId: string;
-  purpose?: CharacterImageUploadPurpose;
-  cursor?: string;
-  search?: string;
-  limit?: number;
-}, db: Prisma.TransactionClient = prisma) {
-  await requireCharacter(input.characterId, db);
-  const purpose = input.purpose ?? IMAGE_SOURCE_PURPOSE;
-  const limit = input.limit ?? LIST_LIMIT;
-  const search = input.search?.trim().toLowerCase() ?? "";
-  const customerIdentity = purpose === CHARACTER_LIBRARY_PURPOSE
-    ? await resolveCustomerIdentitySource(db, { characterId: input.characterId }) : null;
-  const queryIdentity = { characterId: input.characterId, purpose, search };
-  const scope = "character-image-sources";
-  const cursorKeys = input.cursor
-    ? decodeAdminListCursor(input.cursor, scope, queryIdentity) : null;
-  if (cursorKeys && (cursorKeys.length !== 2 || typeof cursorKeys[1] !== "string")) {
-    throw Errors.badRequest("Invalid image library cursor");
-  }
-  let anchor = cursorKeys ? {
-    createdAt: parseIsoCursorKey(cursorKeys[0], scope),
-    id: cursorKeys[1] as string,
-  } : null;
-  const where = operationalMediaAssetWhere({
-      characterId: input.characterId,
+// SPEC: 角色运营图库的成员条件 —— 列表与按 id 读取图片字节共用这一份，不能各写一套。
+// INVARIANT: 只有该角色的图库用途素材或该角色制作批次的产物；用户私有生成物等不在其中。
+function characterImageLibraryWhere(
+  characterId: string,
+  purpose: CharacterImageUploadPurpose,
+  customerIdentity: Awaited<ReturnType<typeof resolveCustomerIdentitySource>> | null,
+) {
+  return operationalMediaAssetWhere({
+      characterId: characterId,
       type: "image",
       safetyStatus: "passed",
       deletedAt: null,
@@ -115,7 +98,7 @@ export async function listCharacterImageSources(input: {
                   some: {
                     batch: {
                       targetType: "character",
-                      targetId: input.characterId,
+                      targetId: characterId,
                       purpose: {
                         in: [
                           "character_cover",
@@ -130,6 +113,33 @@ export async function listCharacterImageSources(input: {
             ],
           }),
     });
+}
+
+export async function listCharacterImageSources(input: {
+  characterId: string;
+  purpose?: CharacterImageUploadPurpose;
+  cursor?: string;
+  search?: string;
+  limit?: number;
+}, db: Prisma.TransactionClient = prisma) {
+  await requireCharacter(input.characterId, db);
+  const purpose = input.purpose ?? IMAGE_SOURCE_PURPOSE;
+  const limit = input.limit ?? LIST_LIMIT;
+  const search = input.search?.trim().toLowerCase() ?? "";
+  const customerIdentity = purpose === CHARACTER_LIBRARY_PURPOSE
+    ? await resolveCustomerIdentitySource(db, { characterId: input.characterId }) : null;
+  const queryIdentity = { characterId: input.characterId, purpose, search };
+  const scope = "character-image-sources";
+  const cursorKeys = input.cursor
+    ? decodeAdminListCursor(input.cursor, scope, queryIdentity) : null;
+  if (cursorKeys && (cursorKeys.length !== 2 || typeof cursorKeys[1] !== "string")) {
+    throw Errors.badRequest("Invalid image library cursor");
+  }
+  let anchor = cursorKeys ? {
+    createdAt: parseIsoCursorKey(cursorKeys[0], scope),
+    id: cursorKeys[1] as string,
+  } : null;
+  const where = characterImageLibraryWhere(input.characterId, purpose, customerIdentity);
   const items: CharacterImageSourceAsset[] = [];
   // Filter membership and search before the visible page limit. Scanning keyset
   // batches preserves legacy JSON metadata and never hides older eligible rows.
@@ -170,6 +180,29 @@ export async function listCharacterImageSources(input: {
       ? encodeAdminListCursor(scope, queryIdentity, [last.createdAt, last.id])
       : null,
   });
+}
+
+/**
+ * SPEC: 按 id 判断一张图是否在它所属角色的运营图库里（任一图库用途），返回该素材或 null。
+ * INTENT: 角色级运营读取图片字节时，放行范围必须恰好等于他们能在图库里列出的图片，
+ *         不能仅凭 characterId（同一角色下还有用户私有、未过安全检查的生成物）。
+ */
+export async function characterImageLibraryAsset(assetId: string, db: Prisma.TransactionClient = prisma) {
+  const asset = await db.mediaAsset.findFirst({ where: { id: assetId, deletedAt: null }, select: { characterId: true } });
+  if (!asset?.characterId) return null;
+  const customerIdentity = await resolveCustomerIdentitySource(db, { characterId: asset.characterId });
+  const member = await db.mediaAsset.findFirst({
+    where: {
+      AND: [
+        { id: assetId },
+        { OR: [
+          characterImageLibraryWhere(asset.characterId, IMAGE_SOURCE_PURPOSE, null),
+          characterImageLibraryWhere(asset.characterId, CHARACTER_LIBRARY_PURPOSE, customerIdentity),
+        ] },
+      ],
+    },
+  });
+  return member && mediaAssetPlatformStatus(member.metadata) !== "archived" ? member : null;
 }
 
 export async function createCharacterImageSource(input: {

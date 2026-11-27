@@ -674,6 +674,13 @@ describe("Character Video Studio", () => {
     expect(container.textContent).toContain(
       "The video provider ran out of capacity",
     );
+    // SPEC: 与图片候选失败同一个组件：首屏是翻译后的原因，机器码与服务端原文折进技术详情。
+    const failure = container.querySelector('[data-testid="generation-run-failure"]')!;
+    expect(failure).not.toBeNull();
+    expect(failure.querySelector("details")?.textContent).toContain("provider_capacity_exhausted");
+    expect(failure.querySelector("details")?.textContent).toContain("The video provider ran out of capacity");
+    expect(failure.querySelector("details")?.open).toBe(false);
+    expect(failure.textContent).toContain("Retry happens on the Run page");
     const retry = [...container.querySelectorAll("a")].find((link) =>
       link.textContent?.includes("Open run to retry")
     );

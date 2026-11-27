@@ -24,6 +24,8 @@ Explore 搜索/筛选、详情、Following、公开/链接可见边界与 CMS �
 
 证据：[草稿竞争](../../.scratch/full-product-audit-2026-10-01/browser/draft-two-tabs-cas.txt)、[发布与运营记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)。五步创建须按完整字段、恢复、预览与发布证明六类任务等价；目录数量不等于语义对标。创作交接已实现为一键、不可变、不阻塞发布的记录（`character_handoffs`），只有自动测试证据；交接与发布界面的实际操作仍需证明。发布面板的暂停/恢复单击、回滚/退役普通确认与精选对象选择器同样只有自动测试证据。不做单角色 A/B，用 Release 前后对比。Hero 的 full-body 请求产出腰上构图，保留为质量限制。
 
+2026-11-26 运营流程简化（分支 `feat/admin-character-flow-simplification`；隔离 Chromium 中 admin-v2-workspaces 全套 10 项通过，含 creator / publisher 单包账号实走与 390/768/1280 WCAG；生成为测试 provider，未调用真实模型）：角色权限包按角色范围可独立完成本职链路（creator 可生图/设身份，publisher 可读图库），角色范围对所有权限生效；发布校验失败自动撤回候选并解冻草稿，失败项刷新后仍可读回；列表区分「归档草稿」与「已退役」；标签随创建原子写入，复制不再以简介充当外貌；工作区按「概览 ｜ 设定 ｜ 素材 ｜ 上线」分组，首次建立身份只在图片页；声音与聊天素材的立即生效在原位置和发布页标示，全平台默认声音迁至生成配置。分析与逐项依据见 [角色运营流程分析](../../.scratch/admin-character-flow-analysis-20261126/REPORT.md)。
+
 ## Chat 与记忆
 
 | 能力 | 最后记录的实施/证据 | 限制 |

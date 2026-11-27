@@ -16,6 +16,7 @@ import {
   type BulkAction,
   type BulkTask,
 } from "./character-bulk-operations";
+import { CharacterCommandFailedError, characterReleaseCheckLabel } from "./release-command";
 
 type TagOption = { readonly id: string; readonly label: string };
 
@@ -101,6 +102,7 @@ export function CharacterBulkBar({
             state: "failed",
             attempts: task.attempts + 1,
             message: cause instanceof Error ? cause.message : "This item failed.",
+            blockers: cause instanceof CharacterCommandFailedError ? cause.failure.blockers : undefined,
           });
         }
       });
@@ -157,7 +159,7 @@ export function CharacterBulkBar({
   const failed = useMemo(() => tasks.filter((task) => task.state === "failed"), [tasks]);
   const retry = () => {
     if (!lastAction || failed.length === 0) return;
-    const queued = failed.map((task) => ({ ...task, state: "queued" as const, message: null }));
+    const queued = failed.map((task) => ({ ...task, state: "queued" as const, message: null, blockers: undefined }));
     setTasks((current) => current.map((task) => queued.find((next) => next.id === task.id) ?? task));
     void execute(lastAction, queued, lastTargets.current);
   };
@@ -197,6 +199,7 @@ export function CharacterBulkBar({
           {actionButton({ kind: "pause" }, canPublish)}
           {actionButton({ kind: "resume" }, canPublish)}
           {actionButton({ kind: "archive" }, canPublish)}
+          {actionButton({ kind: "restore" }, canPublish)}
           {actionButton({ kind: "generate_missing" }, canGenerate)}
           {canTag ? (
             <>
@@ -249,6 +252,11 @@ export function CharacterBulkBar({
                   {t(STATE_LABELS[task.state])}
                 </span>
                 {task.message ? <span className={task.state === "failed" ? "text-xs text-[var(--ad-red-text)]" : "text-xs text-[var(--ad-text-muted)]"}>{t(task.message)}</span> : null}
+                {task.blockers && task.blockers.length > 0 ? (
+                  <span className="text-xs text-[var(--ad-red-text)]">
+                    {t("Fix: {checks}", { checks: task.blockers.map((blocker) => t(characterReleaseCheckLabel(blocker))).join(" · ") })}
+                  </span>
+                ) : null}
               </li>
             ))}
             {skipped.map((item) => (

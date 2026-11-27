@@ -19,6 +19,8 @@ import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { CHARACTER_IMMEDIATE_EFFECT_COPY } from "./character-immediate-effects";
+import type { ChatPackProfileOption, ChatPackSourceOption } from "./chat-pack-options";
 
 export type CharacterChatLibrarySource = {
   id: string;
@@ -34,6 +36,7 @@ type Selection = {
 type VisualIdentity = CharacterMediaLibraryVisualIdentity | null;
 type VisualIdentityChoice = { pin: CharacterMediaLibraryVisualIdentity; label: string };
 type EditorFailure = { action: string; copy: OperatorErrorCopy; versionConflict: boolean };
+type LibraryMessage = { text: string; note?: string; href?: string; linkLabel?: string };
 type Props = {
   characterId: string;
   mediaType: "image" | "video";
@@ -41,17 +44,18 @@ type Props = {
   canPublish: boolean;
   source: CharacterChatLibrarySource | null;
   onCloseSource: () => void;
-  defaultProfileId?: string;
+  packProfiles?: readonly ChatPackProfileOption[];
+  packSources?: readonly ChatPackSourceOption[];
 };
 
-export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPublish, source, onCloseSource, defaultProfileId }: Props) {
+export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPublish, source, onCloseSource, packProfiles = [], packSources = [] }: Props) {
   const { t } = useAdminI18n();
   const [library, setLibrary] = useState<CharacterMediaLibraryListResponse | null>(null);
   const [status, setStatus] = useState("all");
   const [loading, setLoading] = useState(true);
   const [loadingSource, setLoadingSource] = useState(false);
   const [error, setError] = useState<{ cause: unknown; message: string } | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<LibraryMessage | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [batchReviewOpen, setBatchReviewOpen] = useState(false);
   const listGate = useRef(createLatestRequestGate());
@@ -177,16 +181,21 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
         </div>
       </div>
       {error ? <AuthorityRequestError cause={error.cause} message={error.message} requestKind="read" onRetry={() => { void load(); if (source) void loadSource(source); }} /> : null}
-      {message ? <p role="status" className="text-sm text-[var(--ad-green-text)]">{message}</p> : null}
+      {message ? <p role="status" className="text-sm text-[var(--ad-green-text)]">
+        {message.text}
+        {message.note ? <span className="block text-xs font-semibold text-[var(--ad-yellow-text)]">{message.note}</span> : null}
+        {message.href ? <> <a className="font-semibold underline" href={message.href}>{message.linkLabel ?? message.href}</a></> : null}
+      </p> : null}
       {batchReviewOpen && canWrite && canPublish && draftEntries.length > 0 ? (
         <BatchReviewGrid
           characterId={characterId}
           mediaType={mediaType}
           entries={draftEntries}
+          canIndex={library?.capabilities.search ?? false}
           onClose={() => setBatchReviewOpen(false)}
           onReviewed={(count) => {
             setBatchReviewOpen(false);
-            setMessage(t("Batch review saved for {count} items", { count }));
+            setMessage({ text: t("Batch review saved for {count} items", { count }) });
             void load();
           }}
         />
@@ -205,6 +214,7 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
           key={`${characterId}:${selection.source.id}:${selection.visualIdentity?.visualProfileId}:${selection.entry?.revision ?? "new"}:${canWrite}:${canPublish}`}
           characterId={characterId} mediaType={mediaType} selection={selection}
           canWrite={canWrite} canPublish={canPublish} canDescribe={library?.capabilities.describe ?? false}
+          canIndex={library?.capabilities.search ?? false}
           canEditIdentity={choices.some(pin => sameVisualIdentity(pin, selection.visualIdentity))}
           identityLabel={selection.visualIdentity ? describeIdentity(selection.visualIdentity) : null}
           identityChoices={editorChoices}
@@ -215,7 +225,11 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
           onSaved={entry => {
             setSelection({ ...selection, entry, visualIdentity: entryVisualIdentity(entry),
               ...(selection.sourceEntries ? { sourceEntries: [entry, ...selection.sourceEntries.filter(item => item.id !== entry.id)] } : {}) });
-            setMessage(t(entry.status === "published" ? "Chat media enabled for this identity" : entry.status === "withdrawn" ? "Media withdrawn from chat" : "Chat description saved"));
+            setMessage({
+              text: t(entry.status === "published" ? "Chat media enabled for this identity" : entry.status === "withdrawn" ? "Media withdrawn from chat" : "Chat description saved"),
+              // SPEC: 进入 / 撤出聊天都绕过 Release，成功提示也要说出它已经在线上生效。
+              ...(entry.status === "draft" ? {} : { note: t(CHARACTER_IMMEDIATE_EFFECT_COPY) }),
+            });
             void load();
           }}
         />
@@ -238,9 +252,14 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
           characterId={characterId}
           mediaType={mediaType}
           visualIdentity={productionIdentity}
-          defaultProfileId={defaultProfileId}
+          profiles={packProfiles}
+          sources={packSources}
           onCreated={(runId, count) => {
-            setMessage(t("Started pre-generation pack ({count} items): /admin/creative/runs/{runId}", { count, runId }));
+            setMessage({
+              text: t("Started a pre-generation pack of {count} items.", { count }),
+              href: `/admin/creative/runs/${encodeURIComponent(runId)}`,
+              linkLabel: t("View Creative Run"),
+            });
           }}
         />
       ) : null}
@@ -251,9 +270,9 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
   );
 }
 
-function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPublish, canDescribe, canEditIdentity, identityLabel, identityChoices, onIdentityChange, onSaved, onClose, onReload }: {
+function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPublish, canDescribe, canIndex, canEditIdentity, identityLabel, identityChoices, onIdentityChange, onSaved, onClose, onReload }: {
   characterId: string; mediaType: "image" | "video"; selection: Selection; canWrite: boolean; canPublish: boolean;
-  canDescribe: boolean; canEditIdentity: boolean; identityLabel: string | null; identityChoices: VisualIdentityChoice[];
+  canDescribe: boolean; canIndex: boolean; canEditIdentity: boolean; identityLabel: string | null; identityChoices: VisualIdentityChoice[];
   onIdentityChange: (pin: CharacterMediaLibraryVisualIdentity) => void;
   onSaved: (entry: CharacterMediaLibraryEntry) => void; onClose: () => void; onReload: () => void;
 }) {
@@ -342,12 +361,24 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
             <RequestErrorDetails technical={error.copy.technical} />
             {error.versionConflict ? <WorkspaceButton className="mt-2" disabled={busy} onClick={onReload}>{t("Discard edits and reload")}</WorkspaceButton> : null}
           </div> : null}
+          {/* SPEC: Use in chat / Withdraw from chat 直接改线上聊天可发的素材，不进 Release；按钮旁说出来。 */}
+          {canPublish && (entry?.status === "published" ? canWithdraw : editable) ? (
+            <p className="text-xs font-semibold text-[var(--ad-yellow-text)]" data-testid="chat-media-effect-note">
+              {t(CHARACTER_IMMEDIATE_EFFECT_COPY)}
+            </p>
+          ) : null}
+          {/* SPEC: 启用聊天素材必须先写入媒体索引；索引未配置时事前说明，而不是让运营点了才收到「结果未知」。 */}
+          {canPublish && !canIndex && entry?.status !== "published" ? (
+            <p className="text-xs text-[var(--ad-yellow-text)]" data-testid="chat-media-index-unavailable">
+              {t(CHAT_MEDIA_INDEX_UNAVAILABLE_COPY)}
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <WorkspaceButton disabled={locked || !canDescribe} onClick={() => void describe()}><WandSparkles className="h-4 w-4" />{t("Recognize visible content")}</WorkspaceButton>
             <WorkspaceButton disabled={locked || !valid} onClick={() => void save()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}{t(entry ? "Save description" : "Save draft")}</WorkspaceButton>
             {entry?.status === "published"
               ? <WorkspaceButton disabled={busy || !canWithdraw} onClick={() => void save("withdrawn")}>{t("Withdraw from chat")}</WorkspaceButton>
-              : <WorkspaceButton tone="primary" disabled={locked || !valid || !canPublish} onClick={() => void save("published")}>{t("Use in chat")}</WorkspaceButton>}
+              : <WorkspaceButton tone="primary" disabled={locked || !valid || !canPublish || !canIndex} onClick={() => void save("published")}>{t("Use in chat")}</WorkspaceButton>}
           </div>
         </div>
       </div>
@@ -427,6 +458,9 @@ const STALE_EDITOR_CONFLICTS: ReadonlySet<string> = new Set([
 // INTENT: Main reports this as 403, whose generic copy tells the operator to go and request a
 //         permission that would change nothing. Only a new asset under this identity can enter.
 const SOURCE_FROM_OTHER_IDENTITY = "Only platform Character production with this visual identity may enter the shared chat library";
+// SPEC: 服务端在写入前就拒绝了启用（未配置媒体索引）：这是确定的「没有启用」，不是「结果未知」。
+const MEDIA_INDEX_NOT_CONFIGURED = "Configure character media embeddings before publishing chat library items";
+const CHAT_MEDIA_INDEX_UNAVAILABLE_COPY = "The chat media index is not configured, so media cannot be used in chat yet. Save the description as a draft for now.";
 function editorFailure(cause: unknown, action: string): EditorFailure {
   const answered = cause instanceof AdminV2RequestError && cause.outcome === "answered";
   const versionConflict = answered && cause.status === 409 && (
@@ -438,7 +472,11 @@ function editorFailure(cause: unknown, action: string): EditorFailure {
     action, versionConflict,
     copy: answered && cause.status === 403 && cause.message === SOURCE_FROM_OTHER_IDENTITY
       ? { ...copy, headline: "This media was produced under a different visual identity.", nextStep: "Generate it again under the current identity, then add the new media to chat." }
-      : copy,
+      // INVARIANT: 服务端在 prepare 阶段（写文件与事务之前）抛出这条错误，所以即使 503 的
+      //            outcome 记为 unknown，这一条也能确定「什么都没写入」。
+      : cause instanceof AdminV2RequestError && cause.code === "unavailable" && cause.message.includes(MEDIA_INDEX_NOT_CONFIGURED)
+        ? { ...copy, headline: "The chat media index is not configured, so nothing was enabled.", nextStep: "The saved draft is unchanged. Configure the media index, then use it in chat." }
+        : copy,
   };
 }
 type BatchDraftDecision = {
@@ -448,10 +486,11 @@ type BatchDraftDecision = {
   distributionScope: "chat_library" | "teaser" | "both";
 };
 
-function BatchReviewGrid({ characterId, mediaType, entries, onClose, onReviewed }: {
+function BatchReviewGrid({ characterId, mediaType, entries, canIndex, onClose, onReviewed }: {
   characterId: string;
   mediaType: "image" | "video";
   entries: CharacterMediaLibraryEntry[];
+  canIndex: boolean;
   onClose: () => void;
   onReviewed: (count: number) => void;
 }) {
@@ -487,6 +526,8 @@ function BatchReviewGrid({ characterId, mediaType, entries, onClose, onReviewed 
   function applyQuickShortcut(index: number, key: string) {
     const entry = entries[index];
     if (!entry || busy) return;
+    // 索引未配置时不能发布：发布类快捷键不生效，驳回仍可用。
+    if (!canIndex && ["1", "2", "3"].includes(key)) return;
     if (key === "1") {
       update(entry.id, { action: "published", nudity: "none", attireLevel: "clothed" });
     } else if (key === "2") {
@@ -502,6 +543,7 @@ function BatchReviewGrid({ characterId, mediaType, entries, onClose, onReviewed 
   }
 
   function approveAllClothed() {
+    if (!canIndex) return;
     setDecisions(current =>
       Object.fromEntries(entries.map(entry => {
         const prev = current[entry.id];
@@ -560,7 +602,8 @@ function BatchReviewGrid({ characterId, mediaType, entries, onClose, onReviewed 
           <p className="text-xs text-[var(--ad-text-muted)]">{t("Confirm decision, nudity rating, and attire level. Shortcuts on active card: 1 = Clothed, 2 = Partial, 3 = Full, R = Reject.")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <WorkspaceButton disabled={busy} onClick={approveAllClothed}>{t("Mark all clothed & approve")}</WorkspaceButton>
+          <WorkspaceButton disabled={busy || !canIndex} onClick={approveAllClothed}>{t("Mark all clothed & approve")}</WorkspaceButton>
+          {!canIndex ? <span className="text-xs text-[var(--ad-yellow-text)]">{t(CHAT_MEDIA_INDEX_UNAVAILABLE_COPY)}</span> : null}
           <WorkspaceButton
             tone="primary"
             disabled={busy || selectedItems.length === 0 || missingNudityCount > 0}
@@ -600,7 +643,7 @@ function BatchReviewGrid({ characterId, mediaType, entries, onClose, onReviewed 
                 <label className="block">{t("Decision")}
                   <select aria-label={`${t("Decision")} ${entry.id}`} className={`${fieldClass} mt-1`} disabled={busy} value={decision.action} onChange={event => update(entry.id, { action: event.target.value as BatchDraftDecision["action"] })}>
                     <option value="skip">{t("Skip")}</option>
-                    <option value="published">{t("Approve & publish")}</option>
+                    <option disabled={!canIndex} value="published">{t("Approve & publish")}</option>
                     <option value="withdrawn">{t("Reject (withdraw)")}</option>
                   </select>
                 </label>
@@ -640,32 +683,43 @@ function BatchReviewGrid({ characterId, mediaType, entries, onClose, onReviewed 
   );
 }
 
-function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultProfileId, onCreated }: {
+function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, profiles, sources, onCreated }: {
   characterId: string;
   mediaType: "image" | "video";
   visualIdentity: CharacterMediaLibraryVisualIdentity;
-  defaultProfileId?: string;
+  profiles: readonly ChatPackProfileOption[];
+  sources: readonly ChatPackSourceOption[];
   onCreated: (runId: string, count: number) => void;
 }) {
   const { t } = useAdminI18n();
-  const [profileId, setProfileId] = useState(defaultProfileId ?? "");
+  // SPEC: profile 与源图都从角色已有的权威里选，不再手填 —— 手填的 key / ID 只有提交后才会被服务端拒绝。
+  const [profileChoice, setProfileChoice] = useState<string | null>(null);
+  const profileId = profiles.some(option => option.key === profileChoice) ? profileChoice! : profiles[0]?.key ?? "";
   const [brief, setBrief] = useState("");
   const [directionsText, setDirectionsText] = useState("");
   const [outputsPerDirection, setOutputsPerDirection] = useState(2);
-  const [sourceIdsText, setSourceIdsText] = useState("");
+  const [selectedSourceIds, setSelectedSourceIds] = useState<readonly string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdRunId, setCreatedRunId] = useState<string | null>(null);
 
   const lines = (value: string) => value.split("\n").map(line => line.trim()).filter(Boolean);
   const directionLines = lines(directionsText);
-  const sourceIds = [...new Set(lines(sourceIdsText))];
+  // A source that is no longer available drops out instead of being submitted blind.
+  const sourceIds = selectedSourceIds.filter(id => sources.some(option => option.assetId === id));
+  const MAX_VIDEO_SOURCES = 10;
 
-  const canSubmit = !busy && Boolean(profileId.trim()) && brief.trim().length >= 3 && (
+  const canSubmit = !busy && Boolean(profileId) && brief.trim().length >= 3 && (
     mediaType === "image"
       ? directionLines.length >= 1 && directionLines.length <= 12 && directionLines.length * outputsPerDirection <= 30
-      : sourceIds.length >= 1 && sourceIds.length <= 10
+      : sourceIds.length >= 1 && sourceIds.length <= MAX_VIDEO_SOURCES
   );
+
+  function toggleSource(assetId: string) {
+    setSelectedSourceIds(current => current.includes(assetId)
+      ? current.filter(id => id !== assetId)
+      : current.length >= MAX_VIDEO_SOURCES ? current : [...current, assetId]);
+  }
 
   async function launchPack() {
     if (!canSubmit) return;
@@ -679,7 +733,7 @@ function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultP
             purpose: "character_library_image_pack" as const,
             targetType: "character" as const,
             targetId: characterId,
-            profileId: profileId.trim(),
+            profileId,
             count,
             brief: brief.trim(),
             outputsPerDirection,
@@ -699,10 +753,10 @@ function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultP
             purpose: "character_library_video_pack" as const,
             targetType: "character" as const,
             targetId: characterId,
-            profileId: profileId.trim(),
+            profileId,
             count,
             brief: brief.trim(),
-            referenceAssetIds: sourceIds,
+            referenceAssetIds: [...sourceIds],
             reason: `Batch pre-generate chat library video pack for visual v${visualIdentity.visualProfileVersion}`,
           };
       const result = await adminV2Operation("POST /api/v2/admin/creative/runs", { body });
@@ -727,12 +781,26 @@ function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultP
         <p className="text-xs text-[var(--ad-text-muted)]">
           {mediaType === "image"
             ? t("Queue up to 12 scene directions (max 30 total outputs) under visual identity v{version}.", { version: visualIdentity.visualProfileVersion })
-            : t("Queue 1–10 verified source image IDs (1 video clip per source) under visual identity v{version}.", { version: visualIdentity.visualProfileVersion })}
+            : t("Choose 1–10 Character images (1 video clip per image) under visual identity v{version}.", { version: visualIdentity.visualProfileVersion })}
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block text-sm">{t("Generation profile key")}
-            <input className={`${fieldClass} mt-1`} value={profileId} onChange={event => setProfileId(event.target.value)} placeholder={t("profile-key")} />
-          </label>
+          {mediaType === "video" ? (
+            <div className="text-sm">
+              <span className="block">{t("Generation profile")}</span>
+              <span className="mt-1 block font-semibold" data-testid="pack-fixed-profile">{profiles[0] ? t(profiles[0].label) : "—"}</span>
+              <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{t("Character video packs always use the default video production route.")}</span>
+            </div>
+          ) : profiles.length > 0 ? (
+            <label className="block text-sm">{t("Generation profile")}
+              <select className={`${fieldClass} mt-1`} disabled={busy} value={profileId} onChange={event => setProfileChoice(event.target.value)}>
+                {profiles.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}
+              </select>
+            </label>
+          ) : (
+            <p role="status" className="text-sm text-[var(--ad-yellow-text)]">
+              {t("No qualified, unexpired image route is available. Qualify a generation route in Visual identity first.")}
+            </p>
+          )}
           <label className="block text-sm">{t("Pack brief")}
             <input className={`${fieldClass} mt-1`} value={brief} onChange={event => setBrief(event.target.value)} placeholder={mediaType === "image" ? "Everyday lifestyle chat photos" : "Subtle smile and natural motion"} />
           </label>
@@ -746,10 +814,33 @@ function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultP
               <input type="number" min={1} max={10} className={`${fieldClass} mt-1 w-28`} value={outputsPerDirection} onChange={event => setOutputsPerDirection(Math.max(1, Math.min(10, Number(event.target.value) || 1)))} />
             </label>
           </>
+        ) : sources.length === 0 ? (
+          <p role="status" className="text-sm text-[var(--ad-yellow-text)]">{t("This Character has no available images to animate yet.")}</p>
         ) : (
-          <label className="block text-sm">{t("Verified source image IDs (one per line, 1–10 IDs)")}
-            <textarea className={`${fieldClass} mt-1 min-h-24`} value={sourceIdsText} onChange={event => setSourceIdsText(event.target.value)} placeholder={"asset_1\nasset_2"} />
-          </label>
+          <fieldset>
+            <legend className="text-sm">{t("Source images ({selected} of up to {max} selected)", { selected: sourceIds.length, max: MAX_VIDEO_SOURCES })}</legend>
+            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-5">
+              {sources.map(option => {
+                const checked = sourceIds.includes(option.assetId);
+                return (
+                  <label key={option.assetId} className={`flex cursor-pointer flex-col gap-1 rounded-md border p-1.5 text-xs ${checked ? "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]" : "border-[var(--ad-border)]"}`}>
+                    {/* eslint-disable-next-line @next/next/no-img-element -- the source is an authorized media render URL */}
+                    <img alt="" className="aspect-square w-full rounded object-cover" src={option.thumbnailUrl ?? option.url} />
+                    <span className="flex items-center gap-1.5">
+                      <input
+                        checked={checked}
+                        disabled={busy || (!checked && sourceIds.length >= MAX_VIDEO_SOURCES)}
+                        onChange={() => toggleSource(option.assetId)}
+                        type="checkbox"
+                        value={option.assetId}
+                      />
+                      <span className="truncate">{t(option.label, option.labelValues)}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
         )}
         <div className="flex flex-wrap items-center gap-3">
           <WorkspaceButton tone="primary" disabled={!canSubmit} onClick={() => void launchPack()}>

@@ -12,7 +12,8 @@ import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission, jsonBody, parseRequestInput, queryParams, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
-import { effectivePermissions } from "@/server/admin/effective-permissions";
+import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
+import { creativeRunAuthorityResource, creativeRunCharacterId } from "../creative/run-scope";
 import { assignReviewCaseInTransaction } from "../cases/service";
 import { assertIncidentReadable } from "../incidents/scope";
 import { normalizeWorkPreferences, updateWorkPreference, workPreferenceSourceTypes } from "../shared/work-preferences";
@@ -37,6 +38,12 @@ const savedViewScopeRead: Record<SavedViewScope, AdminPermissionKey> = {
   support_request: "support.request.read",
   moderation_review_queue: "safety.review.read",
 };
+
+/**
+ * INTENT: a Saved View is the owner's own filter state, never a row of the scoped domain; the
+ *         list it reopens goes through that domain's own (scope-narrowing) read.
+ */
+const SAVED_VIEW_RESOURCE = { characterScope: "handler_enforced" } as const;
 
 function asRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -140,7 +147,25 @@ async function targetAccess(
     if (!target) return "missing";
     return await assertIncidentReadable(prisma, actor, targetId) ? "allowed" : "forbidden";
   }
-  return await targetDescriptors[targetType].exists(targetId) ? "allowed" : "missing";
+  const run = await prisma.contentProductionBatch.findUnique({
+    where: { id: targetId },
+    select: { targetType: true, targetId: true },
+  });
+  if (!run) return "missing";
+  // SPEC: a scoped creative.run.read grant reaches only Runs under its assigned Characters.
+  const scope = await effectiveCharacterIdsForPermission(actor.id, actor.role, "creative.run.read");
+  if (scope === null) return "allowed";
+  const characterId = creativeRunCharacterId(run);
+  return characterId !== null && scope.has(characterId) ? "allowed" : "forbidden";
+}
+
+/**
+ * SPEC: the authority resource for a collaboration target; only Creative Runs sit under a Character.
+ * INTENT: resolved before the permission check, so a scoped creative.run.* grant is judged
+ *         against the Run's Character instead of being refused for naming none.
+ */
+async function collaborationResource(targetType: CollaborationTargetType, targetId: string) {
+  return targetType === "creative_run" ? creativeRunAuthorityResource(targetId) : undefined;
 }
 
 async function assertTarget(actor: AdminActor, targetType: CollaborationTargetType, targetId: string) {
@@ -192,7 +217,11 @@ async function resolveCollaborationActors(actorIds: readonly string[]) {
 
 export async function listActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = parseRequestInput(collaborationTargetTypeSchema, rawTargetType);
-  const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
+  const actor = await actorWithPermission(
+    request,
+    targetDescriptors[targetType].read,
+    await collaborationResource(targetType, targetId),
+  );
   await assertTarget(actor, targetType, targetId);
   const query = queryParams(
     request,
@@ -235,7 +264,11 @@ export async function listActivity(request: Request, rawTargetType: string, targ
 
 export async function createActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = parseRequestInput(collaborationTargetTypeSchema, rawTargetType);
-  const actor = await actorWithPermission(request, targetDescriptors[targetType].write);
+  const actor = await actorWithPermission(
+    request,
+    targetDescriptors[targetType].write,
+    await collaborationResource(targetType, targetId),
+  );
   const input = await jsonBody(
     request,
     "POST /api/v2/admin/collaboration/:targetType/:targetId/activity",
@@ -366,7 +399,11 @@ export async function createActivity(request: Request, rawTargetType: string, ta
 
 export async function setWatching(request: Request, rawTargetType: string, targetId: string) {
   const targetType = parseRequestInput(collaborationTargetTypeSchema, rawTargetType);
-  const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
+  const actor = await actorWithPermission(
+    request,
+    targetDescriptors[targetType].read,
+    await collaborationResource(targetType, targetId),
+  );
   await assertTarget(actor, targetType, targetId);
   const input = await jsonBody(
     request,
@@ -432,14 +469,14 @@ function viewDto(view: Awaited<ReturnType<typeof prisma.adminSavedView.findFirst
 
 export async function listSavedViewsV2(request: Request) {
   const { scope } = queryParams(request, "GET /api/v2/admin/saved-views");
-  const actor = await actorWithPermission(request, savedViewScopeRead[scope]);
+  const actor = await actorWithPermission(request, savedViewScopeRead[scope], SAVED_VIEW_RESOURCE);
   const views = await prisma.adminSavedView.findMany({ where: { ownerId: actor.id, scope }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }] });
   return ok({ items: views.map(viewDto) });
 }
 
 export async function createSavedViewV2(request: Request) {
   const input = await jsonBody(request, "POST /api/v2/admin/saved-views");
-  const actor = await actorWithPermission(request, savedViewScopeRead[input.scope]);
+  const actor = await actorWithPermission(request, savedViewScopeRead[input.scope], SAVED_VIEW_RESOURCE);
   const key = requireIdempotencyKey(request);
   const existing = await prisma.adminSavedView.findUnique({ where: { ownerId_idempotencyKey: { ownerId: actor.id, idempotencyKey: key } } });
   if (existing) {
@@ -455,7 +492,7 @@ export async function updateSavedViewV2(request: Request, id: string) {
   const current = await prisma.adminSavedView.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Saved view not found");
   const scope = savedViewScopeSchema.parse(current.scope);
-  const actor = await actorWithPermission(request, savedViewScopeRead[scope]);
+  const actor = await actorWithPermission(request, savedViewScopeRead[scope], SAVED_VIEW_RESOURCE);
   if (current.ownerId !== actor.id) throw Errors.notFound("Saved view not found");
   const result = await prisma.adminSavedView.updateMany({
     where: { id, ownerId: actor.id, version: input.expectedVersion },
@@ -469,7 +506,7 @@ export async function deleteSavedViewV2(request: Request, id: string) {
   const current = await prisma.adminSavedView.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Saved view not found");
   const scope = savedViewScopeSchema.parse(current.scope);
-  const actor = await actorWithPermission(request, savedViewScopeRead[scope]);
+  const actor = await actorWithPermission(request, savedViewScopeRead[scope], SAVED_VIEW_RESOURCE);
   // INTENT: If-Match 的线上形态是带引号的 ETag（`"3"`），`adminV2Request` 也是这么发的。
   // 裸 `Number()` 只认不带引号的写法，所以浏览器里每一次删除都会 400，而集成测试发的是裸数字。
   const expectedVersion = Number(request.headers.get("if-match")?.replace(/^W\//, "").replace(/^"|"$/g, ""));

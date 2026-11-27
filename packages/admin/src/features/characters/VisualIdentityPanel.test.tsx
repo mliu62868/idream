@@ -198,7 +198,10 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain('aria-current="step"');
     expect(html).toContain("Open role image production");
     expect(html).toContain("Publish Reference Set");
-    expect(html).toContain("Character Looks using role images");
+    // 「用户保存的造型」与更换身份的「更换形象」是两个实体，名字不能再撞。
+    expect(html).toContain("Customer saved looks using role images");
+    expect(html).toContain("Change appearance (new identity)");
+    expect(html).not.toContain(">Change look<");
     expect(html).toContain("Evening Look");
     expect(html).toContain("Archive Look");
     expect(html).toContain("Unchecked images leave runtime authority");
@@ -215,7 +218,8 @@ describe("Visual Identity operator workbench", () => {
     );
   });
 
-  it("opens formal production settings for every blocked image-production state", () => {
+  // SPEC: 诊断默认折叠；未就绪时只给一行状态和展开入口，深链 / hash 指向折叠区内锚点时自动展开。
+  it("keeps diagnostics folded behind a one-line status unless a deep link targets them", () => {
     const blockedHtml = renderToStaticMarkup(
       <VisualIdentityPanel
         data={data}
@@ -226,41 +230,64 @@ describe("Visual Identity operator workbench", () => {
     const blockedSummary = blockedHtml.indexOf("Diagnostics and advanced settings");
     expect(
       blockedHtml.slice(Math.max(0, blockedSummary - 260), blockedSummary),
-    ).toContain('open=""');
+    ).not.toContain('open=""');
+    expect(blockedHtml).toContain('data-testid="visual-readiness-summary"');
+    expect(blockedHtml).toContain(
+      "Not ready for image production · Next: Publish the approved identity references",
+    );
+    expect(blockedHtml).toContain("Show details and fix");
 
-    const html = renderToStaticMarkup(
+    for (const hash of [
+      "#visual-production-readiness",
+      "#visual-reference-set",
+      "#route-qualification-workbench",
+      "#visual-identity-version",
+    ]) {
+      const html = renderToStaticMarkup(
+        <VisualIdentityPanel
+          data={data}
+          locationHash={hash}
+          permissions={{ writeVisual: true }}
+          runCommittedMutation={runCommittedMutation}
+        />,
+      );
+      const productionSettingsSummary = html.indexOf("Diagnostics and advanced settings");
+      expect(productionSettingsSummary, hash).toBeGreaterThan(0);
+      expect(
+        html.slice(Math.max(0, productionSettingsSummary - 220), productionSettingsSummary),
+        hash,
+      ).toContain('open=""');
+      expect(html, hash).not.toContain('data-testid="visual-readiness-summary"');
+    }
+
+    const ready = renderToStaticMarkup(
       <VisualIdentityPanel
         data={{
           ...data,
-          visual: {
-            ...data.visual,
-            imageReadiness: {
-              state: "route_pending",
-              fingerprint: "a".repeat(64),
-              steps: {
-                identity: "complete",
-                references: "complete",
-                route: "platform_pending",
-              },
-              repair: null,
-              nextDeepLink:
-                "/admin/characters/character-1?tab=visual#route-qualification-workbench",
-            },
-          },
+          visual: { ...data.visual, readiness: { ...data.visual.readiness, ready: true, blockers: [] } },
         }}
         permissions={{ writeVisual: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     );
-    const productionSettingsSummary = html.indexOf("Diagnostics and advanced settings");
+    expect(ready).not.toContain('data-testid="visual-readiness-summary"');
+  });
 
-    expect(productionSettingsSummary).toBeGreaterThan(0);
-    expect(
-      html.slice(
-        Math.max(0, productionSettingsSummary - 220),
-        productionSettingsSummary,
-      ),
-    ).toContain('open=""');
+  // SPEC: 首次建立身份只有 Images 一个入口；没有身份时不挂「更换形象」工作台。
+  it("points a character without an identity to the first portrait in Images", () => {
+    const navigated: string[] = [];
+    const html = renderToStaticMarkup(
+      <VisualIdentityPanel
+        data={{ ...data, visual: { ...data.visual, activeIdentity: null } }}
+        navigateToTab={(tab) => navigated.push(tab)}
+        permissions={{ writeVisual: true }}
+        runCommittedMutation={runCommittedMutation}
+      />,
+    );
+    expect(html).not.toContain('data-testid="change-look"');
+    expect(html).not.toContain("What should Mira look like?");
+    expect(html).toContain('data-testid="first-identity-entry"');
+    expect(html).toContain("Create first identity portrait");
   });
 
   it("fails writes closed when the matching effective grants are absent", () => {

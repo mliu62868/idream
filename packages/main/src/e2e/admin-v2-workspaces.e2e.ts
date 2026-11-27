@@ -1,7 +1,10 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import type { Prisma } from "@prisma/client";
 import {
+  ADMIN_GRANT_BUNDLES,
+  type AdminGrantBundleKey,
   characterProjectCreateResponseSchema,
   characterReleaseAssetPlacement,
   parseCharacterReleaseAssetManifest,
@@ -121,7 +124,7 @@ function internalToken() {
 }
 
 async function openCharacterTab(page: Page, tab: "assets" | "soul" | "visual" | "preview" | "release" | "monitor") {
-  const labels = { assets: "Images", soul: "Persona & appearance", visual: "Visual identity", preview: "Release and preview", release: "Release and preview", monitor: "Live monitoring" };
+  const labels = { assets: "Images", soul: "Persona", visual: "Appearance & identity", preview: "Release and preview", release: "Release and preview", monitor: "Live monitoring" };
   const mobilePage = page.getByLabel("Workspace page", { exact: true });
   if (await mobilePage.isVisible()) await mobilePage.selectOption(tab === "preview" ? "release" : tab);
   else await page.getByRole("tab", { name: labels[tab], exact: true }).click();
@@ -135,7 +138,7 @@ async function openCharacterTab(page: Page, tab: "assets" | "soul" | "visual" | 
       await settings.locator("summary").first().click();
     }
   }
-  if (tab === "monitor") await page.getByText("Release monitoring", { exact: true }).click();
+  if (tab === "monitor") await page.getByText("Release health", { exact: true }).click();
 }
 
 function pendingCharacterCommandStorageKey(characterId: string) {
@@ -222,6 +225,7 @@ async function generateCharacterAssetRun(
   page: Page,
   buttonName: string,
   expectedItemCount: number,
+  runIds: string[] = wizardRunIds,
 ) {
   const createResponsePromise = page.waitForResponse(
     (response) =>
@@ -235,7 +239,7 @@ async function generateCharacterAssetRun(
     data: { batch: { id: string } };
   };
   const runId = createPayload.data.batch.id;
-  wizardRunIds.push(runId);
+  runIds.push(runId);
   await drainCreativeRun(page, runId, expectedItemCount);
   await expect(
     page.getByRole("button", { name: /View candidate/ }),
@@ -380,6 +384,67 @@ async function login(page: Page) {
     },
   );
   expect(response.ok(), await response.text()).toBeTruthy();
+}
+
+// SPEC: 单包运营账号 —— 账号本身没有任何后台权限（role=user），全部权限来自一个角色级包，
+//       范围是 grant 行上的 characterIds。与 character-bundle-scope 集成测试的 fixture 同形。
+// INTENT: 授予 API 只接受运营角色，而每个运营角色都自带全局权限（最窄的 analyst 也带全局
+//         character.performance.read，会把角色列表放宽到全部角色），用它就不再是「只拿这个包」。
+//         所以授予行直接写库；dev 快捷登录只认内置账号，session 也直接写库，
+//         以 Admin 的 idream_admin_session cookie 打开独立浏览器上下文。
+async function grantScopedOperator(
+  browser: Browser,
+  bundleKey: AdminGrantBundleKey,
+  characterIds: readonly string[],
+) {
+  const userId = `e2e-v2-${bundleKey.replaceAll("_", "-")}-${suffix}`;
+  await prisma.user.create({
+    data: {
+      id: userId,
+      email: `${userId}@idream.internal`,
+      emailVerified: true,
+      displayName: `E2E ${bundleKey}`,
+      role: "user",
+      status: "active",
+      dataClass: "internal",
+    },
+  });
+  await prisma.adminUserGrantBundle.create({
+    data: {
+      userId,
+      bundleKey,
+      scope: { characterIds: [...characterIds] },
+      reason: "Scoped Character operator browser journey",
+      createdById: actorId,
+    },
+  });
+  const token = `e2e-v2-scoped-${randomUUID()}`;
+  await prisma.session.create({
+    data: { userId, token, expiresAt: new Date(Date.now() + 2 * 60 * 60_000) },
+  });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([
+    {
+      name: "idream_admin_session",
+      value: token,
+      url: adminBaseURL(),
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ]);
+  const page = await context.newPage();
+  // Authority read-back: the session resolves to this account and its permissions are exactly the bundle.
+  const bootstrap = await page.request.get(`${adminBaseURL()}/api/v2/admin/bootstrap`);
+  expect(bootstrap.ok(), await bootstrap.text()).toBeTruthy();
+  const authority = (await bootstrap.json()).data.bootstrap as {
+    actor: { id: string; role: string } | null;
+    permissions: string[];
+    canCreateCharacters: boolean;
+  };
+  expect(authority.actor).toEqual({ id: userId, role: "user" });
+  expect(authority.permissions).toEqual([...ADMIN_GRANT_BUNDLES[bundleKey].permissions].sort());
+  expect(authority.canCreateCharacters).toBe(false);
+  return { userId, context, page };
 }
 
 async function completeCharacterCreateDraft(
@@ -2428,10 +2493,16 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       where: { characterId: wizardCharacterId },
     });
 
-    // The handoff is one click, records facts only, and never creates a Release.
+    // The handoff records facts only and never creates a Release. Its button is offered only to
+    // creators who cannot publish; this admin can publish, so it records through the same API.
     const releasesBeforeHandoff = await prisma.characterRelease.count({ where: { projectId: releaseProject.id } });
     await openCharacterTab(page, "assets");
-    await page.getByRole("button", { name: "Record creation handoff", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Record creation handoff", exact: true })).toHaveCount(0);
+    const handoffResponse = await page.request.post(
+      `${adminBaseURL()}/api/v2/admin/characters/${encodeURIComponent(releaseProject.characterId)}/handoffs`,
+      { headers: { "idempotency-key": `e2e-handoff-${suffix}` }, data: {} },
+    );
+    expect(handoffResponse.ok(), await handoffResponse.text()).toBeTruthy();
     await expect
       .poll(() => prisma.characterHandoff.count({ where: { characterId: releaseProject.characterId } }))
       .toBe(1);
@@ -3022,7 +3093,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     );
     expect(injectedForbiddenConsoleError).toBeGreaterThanOrEqual(0);
     failures.splice(injectedForbiddenConsoleError, 1);
-    await expect(page.getByRole("button", { name: "Character settings", exact: true })).toBeDisabled();
+    await expect(page.getByRole("tab", { name: "Persona", exact: true })).toBeDisabled();
     await expect
       .poll(async () =>
         page.evaluate((storageKey) => {
@@ -3095,7 +3166,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         { exact: true },
       ),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Character settings", exact: true })).toBeDisabled();
+    await expect(page.getByRole("tab", { name: "Persona", exact: true })).toBeDisabled();
     await expect(page.getByRole("tab", { name: "Release and preview", exact: true })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -3153,7 +3224,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     ).toContainText("serving now");
 
     await openCharacterTab(page, "monitor");
-    const monitoringSummary = page.locator("summary").filter({ hasText: "Release monitoring" });
+    const monitoringSummary = page.locator("summary").filter({ hasText: "Release health" });
     await expect(monitoringSummary).toBeVisible();
     if (await monitoringSummary.locator("..").getAttribute("open") === null) {
       await monitoringSummary.click();
@@ -3190,7 +3261,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     });
     await expect(routeGuardrail).toContainText(lifecycleRouteFingerprint);
     await expect(routeGuardrail).toContainText("expired");
-    const recommendation = routeGuardrail.locator("p").filter({ hasText: "Recommendation:" });
+    const recommendation = routeGuardrail.locator("p").filter({ hasText: "Release action:" });
     await expect(recommendation).toBeVisible();
     await expect(recommendation).toContainText("The qualification behind this route has passed its expiry.");
     await expect(recommendation).toContainText("Publish a new Release for this Character: it re-pins to the generation route that is qualified today. Re-enabling the old profile version is not possible.");
@@ -3204,7 +3275,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         name: "Open image route",
       })
       .click();
-    await page.getByText("Diagnostics and advanced settings", { exact: true }).click();
+    // The route deep link opens the folded diagnostics on its own.
+    await expect(page.locator("#visual-production-readiness")).toHaveAttribute("open", "");
     await expect(
       page.getByRole("heading", {
         level: 3,
@@ -3937,4 +4009,416 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       await completeResponsiveCoreFlows(page, fixture);
     });
   }
+
+  test("lets single-bundle creator and publisher accounts finish only their own step on an assigned Character", async ({
+    browser,
+    page,
+  }, testInfo) => {
+    test.setTimeout(300_000);
+    await login(page);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const scopedRunIds: string[] = [];
+    const createDraft = async (label: string) => {
+      const name = `E2E Scoped ${label} ${suffix}`;
+      const response = await page.request.post(`${adminBaseURL()}/api/v2/admin/characters`, {
+        headers: { "idempotency-key": `e2e-scoped-${label}-${suffix}` },
+        data: {
+          persona: {
+            name,
+            age: 31,
+            gender: "female",
+            characterPromise: "A steady late-night confidant who remembers the small things",
+            detailsMarkdown: "## Personality\nCalm, observant, and dryly funny.",
+            firstMessage: "Long day? Sit down, I saved you the window seat.",
+          },
+          visualDirection: {
+            identityAnchor: "Composed adult night-shift librarian with a recognizable face",
+            stableTraits: ["Short silver-streaked black hair", "Grey-green eyes"],
+            style: wizardVisualStyle,
+            referenceDirection: "Warm desk-lamp portrait, head and shoulders, quiet library background",
+          },
+          reason: { code: "character_wizard_started", summary: "Scoped operator browser journey fixture" },
+          confirmation: "CREATE CHARACTER",
+        },
+      });
+      expect(response.status(), await response.text()).toBe(201);
+      return { name, ...characterProjectCreateResponseSchema.parse((await response.json()).data) };
+    };
+    const assigned = await createDraft("assigned");
+    const unassigned = await createDraft("unassigned");
+    // A Run that belongs to the unassigned Character, so the creator has a concrete out-of-scope target.
+    const outsideRunId = `e2e-v2-scoped-outside-run-${suffix}`;
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: outsideRunId,
+        title: `E2E scoped outside run ${suffix}`,
+        purpose: "character_cover",
+        targetType: "character",
+        targetId: unassigned.characterId,
+        presetIds: [],
+        totalItems: 1,
+        createdById: actorId,
+      },
+    });
+    // The image route is qualified once per profile and style; the first journey normally created it.
+    const routeWhere = {
+      generationProfileKey: wizardIdentityProfileKey,
+      style: wizardVisualStyle,
+      result: "qualified",
+    } as const;
+    if (!(await prisma.generationRouteQualification.findFirst({ where: routeWhere }))) {
+      await prisma.generationRouteQualification.create({
+        data: {
+          routeFingerprint: `e2e-v2-scoped-route-${suffix}`,
+          generationProfileKey: wizardIdentityProfileKey,
+          generationProfileVersion: 1,
+          workflowKey: "qwen-image-edit-img2img",
+          workflowVersion: identityWorkflowVersion,
+          style: wizardVisualStyle,
+          matrixKey: "e2e-character-asset-pack",
+          sampleCount: 40,
+          passCount: 40,
+          identityMatch: 1,
+          result: "qualified",
+          evidence: {
+            evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+            source: "scoped-operator-playwright-journey",
+          },
+          policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+          expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+        },
+      });
+    }
+
+    // ---- Creator: scoped to the assigned Character only. ----
+    const creator = await grantScopedOperator(browser, "character_creator", [assigned.characterId]);
+    const creatorPage = creator.page;
+    const creatorFailures = consoleFailures(creatorPage);
+    const creatorForbidden: string[] = [];
+    creatorPage.on("response", (response) => {
+      if (response.status() === 403) creatorForbidden.push(`${response.request().method()} ${new URL(response.url()).pathname}${new URL(response.url()).search}`);
+    });
+    const assignedUrl = `${adminBaseURL()}/admin/characters/${assigned.characterId}`;
+    await creatorPage.goto(`${assignedUrl}?tab=assets`);
+    await expect(creatorPage.getByTestId("character-draft-status")).toHaveText("0/3 display images ready");
+    await openCharacterTab(creatorPage, "assets");
+    await expect(creatorPage.getByRole("region", { name: "Character image library", exact: true })).toBeVisible();
+    // No publish-class entry anywhere on the creator's Images page. The handoff is offered only once
+    // the Character has an identity, so it is absent until the first portrait is adopted.
+    await expect(creatorPage.getByRole("button", { name: /publish|pause serving|resume serving/i })).toHaveCount(0);
+    await expect(creatorPage.getByRole("button", { name: "Record creation handoff", exact: true })).toHaveCount(0);
+    await expectWcag22AA(creatorPage);
+
+    const portraitResponsePromise = creatorPage.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/api/v2/admin/creative/runs",
+    );
+    await creatorPage.getByRole("button", { name: "Generate 1 portrait", exact: true }).click();
+    const portraitResponse = await portraitResponsePromise;
+    expect(portraitResponse.status(), await portraitResponse.text()).toBe(202);
+    const portraitRunId = ((await portraitResponse.json()) as { data: { batch: { id: string } } }).data.batch.id;
+    scopedRunIds.push(portraitRunId);
+    expect(
+      await prisma.contentProductionBatch.findUniqueOrThrow({
+        where: { id: portraitRunId },
+        select: { targetType: true, targetId: true, purpose: true, createdById: true },
+      }),
+    ).toEqual({
+      targetType: "character",
+      targetId: assigned.characterId,
+      purpose: "character_cover",
+      createdById: creator.userId,
+    });
+    await drainCreativeRun(creatorPage, portraitRunId, 1);
+    await creatorPage
+      .getByRole("region", { name: "Image creator", exact: true })
+      .getByRole("button", { name: "Refresh", exact: true })
+      .click();
+    await creatorPage.getByRole("button", { name: "View candidate 1", exact: true }).click();
+    const identityResponsePromise = creatorPage.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname ===
+          `/api/v2/admin/characters/${assigned.characterId}/identity-bootstrap`,
+    );
+    await creatorPage.getByRole("button", { name: "Set as identity", exact: true }).click();
+    const identityResponse = await identityResponsePromise;
+    expect(identityResponse.ok(), await identityResponse.text()).toBeTruthy();
+    const portraitItem = await prisma.contentProductionItem.findFirstOrThrow({
+      where: { batchId: portraitRunId, status: "generated" },
+      select: { mediaAssetId: true },
+    });
+    const identityProfile = await prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId: assigned.characterId, status: "active" },
+    });
+    expect(identityProfile).toMatchObject({
+      version: 1,
+      evidenceState: "reviewed_bootstrap",
+      anchorAssetIds: [portraitItem.mediaAssetId],
+    });
+    expect(
+      await prisma.referenceSetRevision.count({
+        where: { visualProfileId: identityProfile.id, status: "active" },
+      }),
+    ).toBe(1);
+    await expect(creatorPage.getByRole("button", { name: "Record creation handoff", exact: true })).toBeEnabled();
+    await expect(creatorPage.getByRole("button", { name: /publish|pause serving|resume serving/i })).toHaveCount(0);
+
+    const heroRunId = await generateCharacterAssetRun(creatorPage, "Generate 1 hero image", 1, scopedRunIds);
+    const missingImages = creatorPage.getByTestId("generate-missing-images");
+    const chatResponsePromise = creatorPage.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/api/v2/admin/creative/runs",
+    );
+    await missingImages.getByRole("button", { name: "Generate missing images" }).click();
+    const chatResponse = await chatResponsePromise;
+    expect(chatResponse.status(), await chatResponse.text()).toBe(202);
+    const chatRunId = ((await chatResponse.json()) as { data: { batch: { id: string } } }).data.batch.id;
+    scopedRunIds.push(chatRunId);
+    const selectDraftImage = async (buttonName: string) => {
+      const responsePromise = creatorPage.waitForResponse(
+        (response) =>
+          response.request().method() === "PATCH" &&
+          new URL(response.url()).pathname === `/api/v2/admin/characters/${assigned.characterId}/draft-image`,
+      );
+      await creatorPage.getByRole("button", { name: buttonName }).click();
+      const response = await responsePromise;
+      expect(response.ok(), await response.text()).toBeTruthy();
+    };
+    await selectDraftImage("Use candidate for Character hero");
+    await drainCreativeRun(creatorPage, chatRunId, 1);
+    await selectDraftImage("Use candidate for Chat moments");
+    const packedProject = await prisma.characterProject.findUniqueOrThrow({
+      where: { id: assigned.projectId },
+      select: { draftAssetPack: true },
+    });
+    expect(packedProject.draftAssetPack).toMatchObject({
+      character_cover: { runId: portraitRunId },
+      character_hero: { runId: heroRunId },
+      character_chat: { runId: chatRunId },
+    });
+    expect(
+      await prisma.contentProductionBatch.count({
+        where: { id: { in: scopedRunIds }, createdById: creator.userId, targetId: assigned.characterId },
+      }),
+    ).toBe(3);
+    await expect(creatorPage.getByTestId("character-draft-status")).toContainText("3/3 display images ready");
+
+    // Selecting the last display image lands on the release page. For a creator it offers a disabled
+    // publish button and the handoff — the one exit of the creator's step.
+    await expect(creatorPage.getByRole("tab", { name: "Release and preview", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(creatorPage.getByRole("button", { name: "Publish Character", exact: true })).toBeDisabled();
+    await creatorPage.getByRole("button", { name: "Record creation handoff", exact: true }).click();
+    await expect
+      .poll(() =>
+        prisma.characterHandoff.findFirst({
+          where: { characterId: assigned.characterId },
+          select: { createdById: true, projectId: true, visualProfileId: true },
+        }),
+      )
+      .toEqual({ createdById: creator.userId, projectId: assigned.projectId, visualProfileId: identityProfile.id });
+
+    // The release page is readable but publishing stays disabled; nothing reached the Release ledger.
+    await openCharacterTab(creatorPage, "release");
+    const creatorPublish = creatorPage.getByRole("button", { name: "Publish Character", exact: true });
+    if ((await creatorPublish.count()) > 0) await expect(creatorPublish).toBeDisabled();
+    await expect(creatorPage.getByRole("button", { name: "Preview and publish", exact: true })).toHaveCount(0);
+    expect(await prisma.characterRelease.count({ where: { projectId: assigned.projectId } })).toBe(0);
+    const creatorPublishAttempt = await creatorPage.request.post(
+      `${adminBaseURL()}/api/v2/admin/characters/${encodeURIComponent(assigned.characterId)}/releases`,
+      { headers: { "idempotency-key": `e2e-scoped-creator-publish-${suffix}` }, data: {} },
+    );
+    expect(creatorPublishAttempt.status()).toBe(403);
+    expect(await prisma.characterRelease.count({ where: { projectId: assigned.projectId } })).toBe(0);
+    expect(creatorForbidden).toEqual([]);
+    expect(creatorFailures).toEqual([]);
+
+    // Outside the scope: the roster hides the unassigned Character, its page refuses, and its Creative Runs are 403.
+    await creatorPage.goto(`${adminBaseURL()}/admin/characters?search=${encodeURIComponent("E2E Scoped")}`);
+    await expect(creatorPage.getByText(assigned.name, { exact: true }).first()).toBeVisible();
+    await expect(creatorPage.getByText(unassigned.name, { exact: true })).toHaveCount(0);
+    const outsideDetail = await creatorPage.request.get(
+      `${adminBaseURL()}/api/v2/admin/characters/${encodeURIComponent(unassigned.characterId)}`,
+    );
+    expect(outsideDetail.status()).toBe(403);
+    await creatorPage.goto(`${adminBaseURL()}/admin/characters/${unassigned.characterId}?tab=assets`);
+    await expect(creatorPage.getByText(unassigned.name, { exact: true })).toHaveCount(0);
+    await expect(creatorPage.getByRole("button", { name: /Generate 1 portrait|Create images/ })).toHaveCount(0);
+    await expect(creatorPage.getByRole("region", { name: "Character image library", exact: true })).toHaveCount(0);
+    const outsideCreate = await creatorPage.request.post(`${adminBaseURL()}/api/v2/admin/creative/runs`, {
+      headers: { "idempotency-key": `e2e-scoped-outside-create-${suffix}` },
+      data: {
+        title: "Out-of-scope probe",
+        purpose: "character_cover",
+        targetType: "character",
+        targetId: unassigned.characterId,
+        profileId: wizardBootstrapProfileKey,
+        presetIds: [],
+        count: 1,
+        brief: "Out-of-scope probe portrait",
+        consistencyMode: "balanced",
+        priority: "normal",
+        reason: "Probe the Character scope of a creator bundle",
+      },
+    });
+    expect(outsideCreate.status()).toBe(403);
+    expect((await outsideCreate.json()).error.details).toMatchObject({
+      permission: "creative.run.write",
+      characterId: unassigned.characterId,
+    });
+    const outsideRead = await creatorPage.request.get(
+      `${adminBaseURL()}/api/v2/admin/creative/runs/${encodeURIComponent(outsideRunId)}`,
+    );
+    expect(outsideRead.status()).toBe(403);
+    const outsideLibrary = await creatorPage.request.get(
+      `${adminBaseURL()}/api/v2/admin/characters/${encodeURIComponent(unassigned.characterId)}/image-sources`,
+    );
+    expect(outsideLibrary.status()).toBe(403);
+    const visibleRuns = await creatorPage.request.get(`${adminBaseURL()}/api/v2/admin/creative/runs?limit=100`);
+    expect(visibleRuns.ok(), await visibleRuns.text()).toBeTruthy();
+    const visibleRunIds = ((await visibleRuns.json()).data.items as Array<{ id: string }>).map((item) => item.id);
+    expect(visibleRunIds).not.toContain(outsideRunId);
+    expect(visibleRunIds).toEqual(expect.arrayContaining(scopedRunIds));
+    expect(
+      await prisma.contentProductionBatch.count({
+        where: { targetId: unassigned.characterId, createdById: creator.userId },
+      }),
+    ).toBe(0);
+    await creator.context.close();
+
+    // ---- Publisher: same assigned Character, reads the library and publishes, never generates. ----
+    const publisher = await grantScopedOperator(browser, "character_publisher", [assigned.characterId]);
+    const publisherPage = publisher.page;
+    const publisherFailures = consoleFailures(publisherPage);
+    await publisherPage.goto(`${assignedUrl}?tab=assets`);
+    await expect(publisherPage.getByTestId("character-draft-status")).toContainText("3/3 display images ready");
+    const library = publisherPage.getByRole("region", { name: "Character image library", exact: true });
+    await expect(library).toBeVisible();
+    const libraryAssetCount = await prisma.mediaAsset.count({
+      where: { characterId: assigned.characterId, type: "image", deletedAt: null },
+    });
+    expect(libraryAssetCount).toBeGreaterThanOrEqual(3);
+    await expect(library.locator("article")).toHaveCount(libraryAssetCount);
+    await expect(
+      publisherPage.getByRole("button", {
+        name: /^(Create images|Generate 1 portrait|Generate 1 hero image|Generate missing images|Import image|Import existing image)$/,
+      }),
+    ).toHaveCount(0);
+    await expect(publisherPage.getByRole("region", { name: "Image creator", exact: true })).toHaveCount(0);
+    await expect(publisherPage.getByRole("button", { name: "Record creation handoff", exact: true })).toHaveCount(0);
+    const publisherCreate = await publisherPage.request.post(`${adminBaseURL()}/api/v2/admin/creative/runs`, {
+      headers: { "idempotency-key": `e2e-scoped-publisher-create-${suffix}` },
+      data: {
+        title: "Publisher generation probe",
+        purpose: "character_hero",
+        targetType: "character",
+        targetId: assigned.characterId,
+        profileId: wizardBootstrapProfileKey,
+        presetIds: [],
+        count: 1,
+        brief: "Publisher must not generate",
+        consistencyMode: "balanced",
+        priority: "normal",
+        reason: "Probe that a publisher bundle cannot create Runs",
+      },
+    });
+    expect(publisherCreate.status()).toBe(403);
+    expect((await publisherCreate.json()).error.details).toMatchObject({ permission: "creative.run.write" });
+
+    await openCharacterTab(publisherPage, "release");
+    await expect(publisherPage.getByText(/recorded a creation handoff/)).toBeVisible();
+    await expectWcag22AA(publisherPage);
+    const publish = publisherPage.getByRole("button", { name: "Publish Character", exact: true });
+    await expect(publish).toBeEnabled();
+    await publish.click();
+    await expect
+      .poll(() => prisma.characterRelease.count({ where: { projectId: assigned.projectId } }))
+      .toBe(1);
+    const release = await prisma.characterRelease.findFirstOrThrow({ where: { projectId: assigned.projectId } });
+    const publishWhere = { commandType: "character.release.publish", targetId: release.id };
+    await expect.poll(() => prisma.controlPlaneCommand.count({ where: publishWhere })).toBe(1);
+    const publishCommand = await prisma.controlPlaneCommand.findFirstOrThrow({ where: publishWhere });
+    expect(publishCommand.actorId).toBe(publisher.userId);
+    await expect(
+      drainTargetAdminCommand(prisma, {
+        commandId: publishCommand.id,
+        workerId: `playwright-scoped-publisher-${suffix}`,
+        leaseMs: 30_000,
+      }),
+    ).resolves.toMatchObject({ examined: 1, succeeded: 1, failed: 0 });
+    await expect
+      .poll(() =>
+        prisma.characterServing.findUnique({
+          where: { characterId: assigned.characterId },
+          select: { currentReleaseId: true, state: true },
+        }),
+      )
+      .toEqual({ currentReleaseId: release.id, state: "live" });
+    await publisherPage.reload();
+    await expect(publisherPage.getByTestId("character-customer-status")).toContainText("Live");
+    expect(publisherFailures).toEqual([]);
+
+    // Grouped workspace navigation: no horizontal overflow, keyboard reachable, WCAG clean at phone,
+    // tablet, and desktop widths. Phones get the grouped select; wider screens get the grouped tablist.
+    for (const width of [390, 768, 1280]) {
+      await publisherPage.setViewportSize({ width, height: 900 });
+      await publisherPage.goto(`${assignedUrl}?tab=release`);
+      await expect(publisherPage.getByTestId("character-customer-status")).toContainText("Live");
+      await expectNoHorizontalOverflow(publisherPage);
+      const pageSelect = publisherPage.getByLabel("Workspace page", { exact: true });
+      if (width < 640) {
+        await expect(pageSelect).toBeVisible();
+        await expect(pageSelect.locator("optgroup")).toHaveCount(4);
+        await expect(pageSelect).toBeEnabled();
+        await pageSelect.focus();
+        await expect(pageSelect).toBeFocused();
+        await pageSelect.selectOption("video");
+        await expect(publisherPage).toHaveURL(/tab=video/);
+      } else {
+        await expect(pageSelect).toBeHidden();
+        const tabs = publisherPage.getByRole("tablist", { name: "Character workspace" }).getByRole("tab");
+        await expect(tabs).toHaveText([
+          "Overview", "Persona", "Appearance & identity", "Voice", "Images", "Videos", "Release and preview", "Live monitoring",
+        ]);
+        await expect(tabs.nth(0)).toBeEnabled();
+        const active = publisherPage.getByRole("tab", { name: "Release and preview", exact: true });
+        await active.focus();
+        await expect(active).toBeFocused();
+        for (const [key, name] of [["End", "Live monitoring"], ["Home", "Overview"], ["ArrowLeft", "Live monitoring"], ["ArrowLeft", "Release and preview"]] as const) {
+          await publisherPage.keyboard.press(key);
+          const focused = publisherPage.getByRole("tab", { name, exact: true });
+          await expect(focused).toBeFocused();
+          await expect(focused).toHaveAttribute("aria-selected", "true");
+          await expect(focused).toBeInViewport();
+        }
+        await expectNoHorizontalOverflow(publisherPage);
+      }
+      await expectWcag22AA(publisherPage);
+    }
+    expect(publisherFailures).toEqual([]);
+
+    // The publisher bundle is just as scoped: the unassigned Character stays out of reach.
+    const publisherOutside = await publisherPage.request.get(
+      `${adminBaseURL()}/api/v2/admin/characters/${encodeURIComponent(unassigned.characterId)}/image-sources`,
+    );
+    expect(publisherOutside.status()).toBe(403);
+    expect(await prisma.characterRelease.count({ where: { projectId: unassigned.projectId } })).toBe(0);
+    await publisher.context.close();
+
+    const evidencePath = testInfo.outputPath("scoped-character-operators.json");
+    await writeFile(evidencePath, JSON.stringify({
+      sourceRevision: process.env.IDREAM_SOURCE_REVISION,
+      runId: process.env.PW_RUN_ID,
+      assignedCharacterId: assigned.characterId,
+      unassignedCharacterId: unassigned.characterId,
+      creator: creator.userId,
+      publisher: publisher.userId,
+      runs: scopedRunIds,
+      releaseId: release.id,
+      publishCommandId: publishCommand.id,
+    }, null, 2));
+    await testInfo.attach("scoped-character-operators", { path: evidencePath, contentType: "application/json" });
+  });
 });

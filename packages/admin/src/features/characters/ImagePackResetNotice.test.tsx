@@ -13,7 +13,7 @@ describe("draft image pack reset warning", () => {
     });
     expect(draftSelectedImageCount(data)).toBe(2);
     expect(renderToStaticMarkup(<ImagePackResetNotice count={0} />)).toBe("");
-    expect(renderToStaticMarkup(<ImagePackResetNotice count={2} />)).toContain("This clears the 2 cover, hero, and chat images");
+    expect(renderToStaticMarkup(<ImagePackResetNotice count={2} />)).toContain("This clears the 2 display images");
   });
 
   it("warns beside the identity and reference writes that clear the pack", () => {
@@ -31,6 +31,6 @@ describe("draft image pack reset warning", () => {
         runCommittedMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
       />,
     );
-    expect(html).toContain("This clears the 1 cover, hero, and chat images");
+    expect(html).toContain("This clears the 1 display images");
   });
 });

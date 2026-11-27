@@ -454,11 +454,23 @@ export async function setCharacterTags(input: {
     throw Errors.badRequest("Confirmation did not match tag target");
   }
   const tagIds = [...new Set(body.tagIds)];
+  // INVARIANT: 先锁角色行，再读当前标签。并发的整组替换因此串行，expectedTagIds 的比对读到的
+  //            一定是前一个写入提交后的集合，而不是两边都读到同一份旧集合、后写的静默覆盖先写的。
+  await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${id} FOR UPDATE`;
   const before = await tx.character.findFirst({
     where: operationalCharacterWhere({ id, deletedAt: null }),
     include: { tags: { include: { tag: true } } },
   });
   if (!before) throw Errors.notFound("Character not found");
+  if (body.expectedTagIds) {
+    const current = new Set(before.tags.map((link) => link.tagId));
+    const expected = new Set(body.expectedTagIds);
+    if (current.size !== expected.size || [...expected].some((tagId) => !current.has(tagId))) {
+      throw Errors.versionConflict("Character tags changed since they were read", {
+        currentTagIds: [...current].sort(),
+      });
+    }
+  }
   const known = await tx.tag.findMany({
     where: { id: { in: tagIds } },
     select: { id: true, label: true },

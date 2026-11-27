@@ -17,7 +17,7 @@ import {
   jsonText as text,
   toInputJson,
 } from "../shared/prisma-json";
-import { characterWorkspaceLink } from "./character-deep-link";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import { characterContentModerationText, characterDraftSnapshots } from "./draft-content";
 import { moderateText } from "@/server/moderation/text-authority";
 import {
@@ -155,7 +155,8 @@ export async function getCharacterProjectDraftForResume(characterId: string) {
       characterId,
       projectId: project.id,
       projectVersion: project.version,
-      deepLink: characterWorkspaceLink(characterId),
+      // INVARIANT: 与新建、复制同一落点——草稿下一步总是图片页。
+      deepLink: characterWorkspaceTabLink(characterId, "assets"),
     },
     draft: {
       persona: {

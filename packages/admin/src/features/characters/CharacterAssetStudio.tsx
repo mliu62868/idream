@@ -5,25 +5,9 @@ import {
   creativeRunCreateRequestSchema,
   type CharacterImageSourceAsset,
   type CharacterWorkspaceDetail,
-  type CreativeRun,
   type CreativeRunDetail,
 } from "@idream/shared/admin";
-import {
-  Check,
-  Loader2,
-  RefreshCcw,
-  ShieldAlert,
-  Sparkles,
-  WandSparkles,
-  X,
-} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import {
-  StatusBadge,
-  WorkspaceButton,
-  textAreaClass,
-} from "@/features/operations/WorkspaceUi";
-import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { characterImageFillSkipMessage, createOrRecoverCharacterRun, createOrRecoverMissingCharacterImage, defaultCharacterImageBrief } from "./creative-run-creation";
 import { useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
@@ -32,7 +16,6 @@ import {
   readActiveDurableMutationIntent,
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
-import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
 import {
   committedProjectionTargetId,
   isProjectionRequestCancellation,
@@ -40,21 +23,15 @@ import {
   useCommittedProjectionLoader,
 } from "@/lib/committed-projection";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { cn } from "@/lib/utils";
 import { characterIdentityBootstrapMutation } from "@/features/image-workflow-transport";
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
-import { ImagePackResetNotice, draftSelectedImageCount } from "./ImagePackResetNotice";
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   canChooseCharacterAssetPurpose,
-  candidateState,
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
-  characterAssetRunRequestKey,
   characterAssetRunReceiptMessage,
   characterAssetPurposes,
   characterAssetStudioLayoutClass,
-  characterSourceVariationBlockerMessage,
-  characterSourceVariationAvailabilityMessage,
   committedCharacterRunProjectionMatches,
   committedRunProjectionUnavailable,
   isCharacterAssetPurpose,
@@ -66,19 +43,42 @@ import {
   type CharacterAssetPurpose,
 } from "./character-asset-studio-authority";
 import {
-  AssetImage,
-  CandidateBatchGrid,
-  CandidateComparisonStage,
-  IdentityRail,
-  ImageProductionReadinessCard,
-} from "./CharacterAssetStudioStage";
-
-function savedAssetRunRequest(intent: DurableMutationIntent | null, characterId: string) {
-  const saved = creativeRunCreateRequestSchema.safeParse(intent?.requestSnapshot);
-  return saved.success && saved.data.targetType === "character" &&
-    saved.data.targetId === characterId && isCharacterAssetPurpose(saved.data.purpose)
-    ? { ...saved.data, purpose: saved.data.purpose } : null;
-}
+  beginCharacterAssetRunListRead,
+  characterAssetRunBlockedMessage,
+  characterAssetRunCreationFailure,
+  characterAssetRunRequestDraft,
+  characterAssetRunRequestSignature,
+  characterAssetRunSubmittedMessage,
+  characterImageProductionPreparationError,
+  confirmCharacterLibraryCandidate,
+  mergeCharacterAssetRunPages,
+  parseCharacterAssetRunRequest,
+  savedAssetRunRequest,
+  scopeCharacterAssetRunPages,
+  type CharacterAssetRunPages,
+} from "./character-asset-studio-requests";
+import {
+  characterAssetExistingImages,
+  characterAssetGenerationAction,
+  characterAssetRequestInProgress,
+  type CharacterAssetStudioBusy,
+} from "./character-asset-studio-view";
+import { IdentityRail } from "./CharacterAssetStudioStage";
+import { useCharacterAssetRunDeliveryRefresh, useCharacterAssetRunPolling } from "./use-character-asset-run-refresh";
+import { CharacterAssetCandidatePanel } from "./CharacterAssetStudioCandidatePanel";
+import { BootstrapBriefEditor, CharacterAssetRunHistory } from "./CharacterAssetStudioHistory";
+import { CharacterAssetDecisionBar, CharacterAssetInspector } from "./CharacterAssetStudioInspector";
+import {
+  CharacterAssetStudioAlerts,
+  CharacterAssetStudioLoading,
+  CharacterAssetStudioNoPermission,
+  GenerateMissingImagesBar,
+  LibraryCandidateStrip,
+  RefreshWarningNotice,
+  RunReceiptNotice,
+  SelectionIntentNotice,
+} from "./CharacterAssetStudioNotices";
+import { CharacterAssetRouteStaleNotice, CharacterAssetStudioSetupPanel } from "./CharacterAssetStudioSetupPanel";
 
 export function CharacterAssetStudio({
   actorId = "anonymous",
@@ -101,19 +101,14 @@ export function CharacterAssetStudio({
   onProjectReload: () => Promise<void>;
   commitProjectMutation: CharacterAssetProjectMutation;
 }) {
-  const { locale, t, value } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const subject = resolveCharacterAssetSubject({
     draftName: data.preview.draft?.name,
     draftDescription: data.preview.draft?.description,
     liveName: data.character.name,
     liveDescription: data.character.description,
   });
-  const [runPages, setRunPages] = useState<{
-    purpose: CharacterAssetPurpose | null;
-    history: CreativeRun[];
-    active: CreativeRun[];
-    cursor: string | null;
-  }>({ purpose: null, history: [], active: [], cursor: null });
+  const [runPages, setRunPages] = useState<CharacterAssetRunPages>({ purpose: null, history: [], active: [], cursor: null });
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
@@ -175,9 +170,7 @@ export function CharacterAssetStudio({
     savedCreateRequest?.runCount ?? 1,
   );
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<
-    "generate" | "select" | "prepare" | null
-  >(null);
+  const [busy, setBusy] = useState<CharacterAssetStudioBusy>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | { readonly runId: string } | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
@@ -273,52 +266,10 @@ export function CharacterAssetStudio({
       ),
     [data.project.draftAssetSelections],
   );
-  const existingImages = useMemo(() => {
-    const images: Array<{
-      readonly id: string;
-      readonly url: string;
-      readonly thumbnailUrl: string;
-    }> = [];
-    const seen = new Set<string>();
-    const add = (
-      id: string,
-      url: string | null | undefined,
-      thumbnailUrl: string | null | undefined = url,
-    ) => {
-      const displayUrl = url ?? thumbnailUrl;
-      if (!displayUrl || seen.has(displayUrl)) return;
-      seen.add(displayUrl);
-      images.push({
-        id,
-        url: displayUrl,
-        thumbnailUrl: thumbnailUrl ?? displayUrl,
-      });
-    };
-    const references = [
-      ...(data.visual.activeReferenceSet?.references ?? []),
-      ...data.visual.anchors,
-      ...data.visual.references,
-      ...(data.visual.videoSources ?? []),
-    ];
-    const preferredAssetId =
-      data.project.draftAssetPack[activePurpose] ??
-      (activePurpose === "character_cover"
-        ? data.project.draftImageAssetId
-        : null);
-    const preferred = references.find(
-      (reference) =>
-        reference.mediaAssetId === preferredAssetId && reference.available,
-    );
-    if (preferred)
-      add(preferred.mediaAssetId, preferred.url, preferred.thumbnailUrl);
-    add(`${data.character.id}:primary`, data.character.imageUrl);
-    add(`${data.character.id}:draft`, data.preview.draft?.imageUrl);
-    for (const reference of references) {
-      if (!reference.available) continue;
-      add(reference.mediaAssetId, reference.url, reference.thumbnailUrl);
-    }
-    return images;
-  }, [activePurpose, data]);
+  const existingImages = useMemo(
+    () => characterAssetExistingImages(data, activePurpose),
+    [activePurpose, data],
+  );
 
   const loadRuns = useCallback(
     async (
@@ -329,65 +280,38 @@ export function CharacterAssetStudio({
       } = {},
     ) => {
       const { activeOnly = false, cursor } = options;
-      const fullRead = !activeOnly && !cursor;
-      const request = cursor
-        ? historyPageRequestGate.current.begin()
-        : activeOnly
-          ? activeRunsRequestGate.current.begin()
-          : runListRequestGate.current.begin();
-      const activeRequest = activeOnly
-        ? request
-        : fullRead
-          ? activeRunsRequestGate.current.begin()
-          : null;
-      if (fullRead) historyPageRequestGate.current.invalidate();
-      const baseQuery = {
-        limit: "20",
-        targetType: "character",
-        targetId: data.character.id,
+      const { fullRead, request, activeRequest, pages } = beginCharacterAssetRunListRead({
+        gates: {
+          runList: runListRequestGate.current,
+          activeRuns: activeRunsRequestGate.current,
+          historyPage: historyPageRequestGate.current,
+        },
+        characterId: data.character.id,
         purpose: activePurpose,
-        sort: "updated_desc",
-      };
-      const readPage = (extra: Record<string, string>) => adminV2Operation(
-        "GET /api/v2/admin/creative/runs",
-        { query: new URLSearchParams({ ...baseQuery, ...extra }),
-          ...(options.signal ? { signal: options.signal } : {}) },
-      );
-      // History membership is never evidence that no request is running. Keep
-      // the two execution states independently discoverable even behind pages
-      // of completed work; the server owns both purpose and outcome filtering.
-      const [history, pending, running] = await Promise.all([
-        activeOnly ? Promise.resolve(null) : readPage(cursor ? { cursor } : {}),
-        cursor ? Promise.resolve(null) : readPage({ executionOutcome: "pending" }),
-        cursor ? Promise.resolve(null) : readPage({ executionOutcome: "running" }),
-      ]);
+        activeOnly,
+        cursor,
+        signal: options.signal,
+      });
+      const [history, pending, running] = await pages;
       if (!request.isCurrent()) throw new SupersededProjectionError();
-      const active = pending && running
-        ? [...pending.items, ...running.items].filter((run) => run.purpose === activePurpose)
-        : [];
-      const historyItems = history?.items.filter((run) => run.purpose === activePurpose) ?? [];
-      const scoped = [...new Map([...historyItems, ...active].map((run) => [run.id, run])).values()];
+      const { active, historyItems, scoped } = scopeCharacterAssetRunPages({
+        history,
+        pending,
+        running,
+        purpose: activePurpose,
+      });
       // A page requested during this full read continues the listing it just replaced.
       if (fullRead) historyPageRequestGate.current.invalidate();
       // A poll tick that began after this full read holds the newer active list.
       const activeIsNewest = activeRequest?.isCurrent() === true;
-      setRunPages((current) => {
-        const samePurpose = current.purpose === activePurpose;
-        const previousHistory = samePurpose ? current.history : [];
-        const nextActive = activeIsNewest ? active : samePurpose ? current.active : [];
-        if (!history) return {
-          purpose: activePurpose, active: nextActive, history: previousHistory,
-          cursor: samePurpose ? current.cursor : null,
-        };
-        return {
-          purpose: activePurpose,
-          active: nextActive,
-          history: cursor
-            ? [...new Map([...previousHistory, ...historyItems].map((run) => [run.id, run])).values()]
-            : historyItems,
-          cursor: history.pageInfo.hasNextPage ? history.pageInfo.endCursor : null,
-        };
-      });
+      setRunPages((current) => mergeCharacterAssetRunPages(current, {
+        purpose: activePurpose,
+        cursor,
+        history,
+        historyItems,
+        active,
+        activeIsNewest,
+      }));
       const current = selectedRunIdRef.current;
       const committedTargetId = committedProjectionTargetId(
         runCreationIntentRef.current,
@@ -483,22 +407,7 @@ export function CharacterAssetStudio({
     };
   });
 
-  const refreshedDeliveries = useRef(new Set<string>());
-  useEffect(() => {
-    if (!selectedRun) return;
-    const assetIds = selectedRun.items.flatMap((item) => item.asset ? [item.asset.id] : []);
-    const terminal = ["succeeded", "partially_succeeded", "failed", "cancelled"].includes(selectedRun.executionOutcome);
-    const itemFailure = selectedRun.items.some((item) => item.executionState === "failed");
-    if (assetIds.length === 0 && !terminal && !itemFailure) return;
-    const receipt = `${selectedRun.id}:${terminal ? selectedRun.executionOutcome : itemFailure ? "needs_confirmation" : "delivered"}:${assetIds.sort().join(",")}`;
-    if (refreshedDeliveries.current.has(receipt)) return;
-    // A Run projection can deliver an image without a project mutation. Refresh
-    // the library and workspace once per delivered asset set, including recovery.
-    refreshedDeliveries.current.add(receipt);
-    void onProjectReload().catch((cause) => {
-      setRefreshWarning(cause instanceof Error ? cause.message : "Character assets could not be refreshed");
-    });
-  }, [onProjectReload, selectedRun]);
+  useCharacterAssetRunDeliveryRefresh(selectedRun, onProjectReload, setRefreshWarning);
 
   useEffect(() => {
     if (!permissions.read) return;
@@ -574,39 +483,7 @@ export function CharacterAssetStudio({
     selectRunId(event.currentTarget.value);
   };
 
-  const pollingRunId = selectedRun?.id ?? null;
-  const shouldPollSelectedRun =
-    selectedRun !== null &&
-    (["pending", "running"].includes(selectedRun.executionOutcome) ||
-      activeRuns.some((run) => ["pending", "running"].includes(run.executionOutcome)));
-  // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
-  const pollAssetRun = useCallback<PollingTask>(
-    async (context) => {
-      if (!pollingRunId) return null;
-      try {
-        await Promise.all([loadRun(pollingRunId), loadRuns({ activeOnly: true })]);
-        if (!context.cancelled) setRefreshWarning(null);
-        return 4_000;
-      } catch (cause) {
-        // INTENT: 这一轮被取代不是故障，但取代它的未必是另一轮轮询（可能是一次手动读取），
-        //         没人接管循环。只有循环本身被取消才停，否则按正常节奏继续。
-        if (isProjectionRequestCancellation(cause)) return context.cancelled ? null : 4_000;
-        if (!context.cancelled) {
-          setRefreshWarning(
-            cause instanceof Error
-              ? t("Automatic refresh was delayed: {detail}. Retrying in the background; Refresh is also available.", { detail: t(cause.message) })
-              : "Automatic refresh was delayed. Retrying in the background; Refresh is also available.",
-          );
-        }
-        return 8_000;
-      }
-    },
-    [loadRun, loadRuns, pollingRunId, t],
-  );
-  usePollingTask(
-    pollingRunId && shouldPollSelectedRun ? pollAssetRun : null,
-    4_000,
-  );
+  useCharacterAssetRunPolling({ activeRuns, loadRun, loadRuns, selectedRun, setRefreshWarning, t });
 
   const activeRunDetail =
     selectedRun?.id === selectedRunId ? selectedRun : null;
@@ -641,9 +518,7 @@ export function CharacterAssetStudio({
     setWorkspaceMode("review");
   };
   const activeConfig = purposeConfig[activePurpose];
-  const imageRequestInProgress = activeRuns.some((run) => run.purpose === activePurpose && ["pending", "running"].includes(
-    selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
-  )) || (selectedRun?.purpose === activePurpose && ["pending", "running"].includes(selectedRun.executionOutcome));
+  const imageRequestInProgress = characterAssetRequestInProgress(activeRuns, selectedRun, activePurpose);
   const mutationContextLocked = Boolean(
     runCreationIntent ||
     selectionMutationIntent,
@@ -739,23 +614,7 @@ export function CharacterAssetStudio({
           : "The live portrait is now the sealed identity reference. A production administrator still needs to activate a compatible image route.",
       );
     } catch (cause) {
-      // INTENT: 只有服务端明确拒绝（4xx）才能断言线上图片没变；超时或 5xx 时提交可能已经落地，
-      //         这时让运营先刷新核对，而不是保证「什么都没发生」再诱导重试。
-      if (cause instanceof AdminV2RequestError && cause.outcome === "answered" && cause.status === 409) {
-        setError(
-          "Image production was not enabled because this Character changed elsewhere. Refresh the page and try again.",
-        );
-      } else if (
-        cause instanceof AdminV2RequestError &&
-        cause.outcome === "answered" &&
-        [400, 401, 403, 404, 422].includes(cause.status)
-      ) {
-        setError(cause.message);
-      } else {
-        setError(
-          "Image production preparation could not be confirmed. Refresh the page to check whether it was applied before trying again.",
-        );
-      }
+      setError(characterImageProductionPreparationError(cause));
     } finally {
       setBusy(null);
     }
@@ -793,50 +652,22 @@ export function CharacterAssetStudio({
   const runRequestDraft = (
     purpose: CharacterAssetPurpose,
     referenceAssetIds: string[] = [],
-  ) => {
-    const orientation = orientationForPurpose(purpose);
-    return {
-      // This title is persisted creative input, not translated interface copy.
-      title: `${subject.name} · ${purposeConfig[purpose].label}`,
+  ) =>
+    characterAssetRunRequestDraft({
       purpose,
-      targetType: "character" as const,
-      targetId: data.character.id,
-      profileId: (bootstrapMode ? bootstrapProfile?.profileKey : qualifiedRoute?.generationProfileKey) ?? "",
-      presetIds: [],
       referenceAssetIds,
-      bootstrapIdentity: bootstrapMode,
-      ...(orientation ? { orientation } : {}),
-      count: 1,
-      brief: briefs[purpose].trim(),
-      ...(negativePrompts[purpose].trim() ? { negativePrompt: negativePrompts[purpose].trim() } : {}),
-      consistencyMode: "strict" as const,
-      priority: "normal" as const,
-      reason: bootstrapMode
-        ? "Create the first identity portrait"
-        : referenceAssetIds.length
-          ? "Create identity-preserving variations from the selected character asset"
-          : "Create a customer-facing character asset pack candidate",
-    };
-  };
-  const parseRunRequest = (snapshot: unknown) => {
-    const parsed = creativeRunCreateRequestSchema.safeParse(snapshot);
-    return parsed.success && parsed.data.targetType === "character" &&
-      parsed.data.targetId === data.character.id && isCharacterAssetPurpose(parsed.data.purpose)
-      ? parsed.data : null;
-  };
-  const runRequestSignature = (body: ReturnType<typeof creativeRunCreateRequestSchema.parse>) => characterAssetRunRequestKey({
-    characterId: data.character.id,
-    title: body.title ?? `${subject.name} · ${purposeConfig[body.purpose as CharacterAssetPurpose].label}`,
-    purpose: body.purpose as CharacterAssetPurpose,
-    profileId: body.profileId,
-    referenceAssetIds: body.referenceAssetIds,
-    bootstrapIdentity: body.bootstrapIdentity,
-    orientation: body.orientation ?? "",
-    count: body.count,
-    runCount: body.runCount,
-    brief: body.brief,
-    negativePrompt: body.negativePrompt,
-  });
+      subjectName: subject.name,
+      characterId: data.character.id,
+      profileId: (bootstrapMode ? bootstrapProfile?.profileKey : qualifiedRoute?.generationProfileKey) ?? "",
+      bootstrapMode,
+      orientation: orientationForPurpose(purpose),
+      brief: briefs[purpose],
+      negativePrompt: negativePrompts[purpose],
+    });
+  const parseRunRequest = (snapshot: unknown) =>
+    parseCharacterAssetRunRequest(snapshot, data.character.id);
+  const runRequestSignature = (body: Parameters<typeof characterAssetRunRequestSignature>[0]) =>
+    characterAssetRunRequestSignature(body, data.character.id, subject.name);
 
   // Each slot keeps its own durable request. Main may return a committed skip instead of a Run.
   const startMissingImageRun = async (purpose: CharacterAssetPurpose) => {
@@ -877,16 +708,8 @@ export function CharacterAssetStudio({
       } else if (skipped.length > 0) {
         setMessage(t("The checked placements already have images, selectable candidates, or pending Runs."));
       }
-      const confirmed = await Promise.allSettled(skipped.map(async ({ purpose, skip }) => {
-        if (skip.reason !== "candidate_available") return null;
-        const asset = libraryAssets.find((item) => item.id === skip.assetId) ?? (
-          await adminV2Operation("GET /api/v2/admin/characters/:id/image-sources", {
-            path: { id: data.character.id },
-            query: new URLSearchParams({ purpose: "character_library", search: skip.assetId }),
-          })
-        ).items.find((item) => item.id === skip.assetId);
-        return asset?.qualification?.selectablePurposes.includes(purpose) ? { purpose, asset } : null;
-      }));
+      const confirmed = await Promise.allSettled(skipped.map((entry) =>
+        confirmCharacterLibraryCandidate(entry, libraryAssets, data.character.id)));
       const candidateById = new Map(confirmed.flatMap((item) => item.status === "fulfilled" && item.value
         ? [[item.value.asset.id, item.value] as const] : []));
       if (candidateById.size > 0) {
@@ -924,11 +747,7 @@ export function CharacterAssetStudio({
   ) => {
     if (unconfirmedOperations.length > 0) return;
     if (!runCreationIntent && runPages.purpose !== purpose) return;
-    if (!runCreationIntent && (
-      activeRuns.some((run) => run.purpose === purpose && ["pending", "running"].includes(
-        selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
-      )) || (selectedRun?.purpose === purpose && ["pending", "running"].includes(selectedRun.executionOutcome))
-    )) return;
+    if (!runCreationIntent && characterAssetRequestInProgress(activeRuns, selectedRun, purpose)) return;
     const intent = runCreationIntentRef.current;
     const recovered = intent ? creativeRunCreateRequestSchema.safeParse(intent.requestSnapshot) : null;
     const profileId = bootstrapMode
@@ -992,11 +811,7 @@ export function CharacterAssetStudio({
         return;
       }
       if (result.state === "blocked") {
-        setError(result.intent.status === "committed_projection_pending"
-          ? "Another tab already has a committed Character Run receipt. Verify it before creating again."
-          : result.intent.status === "reconciliation_required"
-            ? "Another tab has an aged Character Run receipt. Reconcile it with the server before creating again."
-            : "Another tab already started a different Character image request. Its exact context is locked for safe resume.");
+        setError(characterAssetRunBlockedMessage(result.intent.status));
         return;
       }
       committedRun = true;
@@ -1005,13 +820,7 @@ export function CharacterAssetStudio({
       setActivePurpose(body.purpose);
       setSelectedIndex(0);
       if (result.source === "submission") {
-        setMessage(body.runCount
-          ? t("Started {count} image runs. Each appears in the run history.", { count: body.runCount })
-          : body.bootstrapIdentity
-          ? "First-portrait generation was committed. Results will appear here automatically."
-          : body.referenceAssetIds.length
-            ? "Variation run was committed from this candidate."
-            : "Generation was committed. Results will appear here automatically.");
+        setMessage(characterAssetRunSubmittedMessage(body, t));
       }
       if (result.source === "submission") {
         await loadRuns();
@@ -1020,20 +829,14 @@ export function CharacterAssetStudio({
         if (result.source === "reconciliation") setMessage("The committed generation receipt was recovered from the server.");
       }
     } catch (cause) {
-      if (committedRun || runCreationIntentRef.current?.status === "committed_projection_pending") {
-        if (!isProjectionRequestCancellation(cause)) {
-          setRefreshWarning(committedRunProjectionUnavailable(cause instanceof Error ? cause.message : null, t));
-        }
-      } else if (runCreationIntentRef.current?.status === "outcome_unknown") {
-        setError("Generation outcome is unknown. Choose Resume generation to replay the same intent without creating a duplicate Run.");
-      } else if (runCreationIntentRef.current?.status === "reconciliation_required" && cause instanceof AdminV2RequestError) {
-        setError(t("Generation outcome still needs server confirmation: {detail}. Choose Reconcile saved request; it cannot create a duplicate Run.", { detail: t(cause.message) }));
-      } else {
-        setError(cause instanceof AdminV2RequestError && cause.status === 503 &&
-          cause.code === "unavailable" && cause.message.includes("No Run was created")
-          ? "Image generation is offline. Restore backend health, then generate again. No Run was created."
-          : cause instanceof Error ? cause.message : "The saved generation request could not be reconciled.");
-      }
+      const failure = characterAssetRunCreationFailure({
+        cause,
+        committedRun,
+        intentStatus: runCreationIntentRef.current?.status,
+        t,
+      });
+      if (failure?.kind === "warning") setRefreshWarning(failure.message);
+      else if (failure) setError(failure.message);
     } finally {
       setBusy(null);
     }
@@ -1218,851 +1021,205 @@ export function CharacterAssetStudio({
   };
 
   if (!permissions.read)
-    return (
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8">
-        <ShieldAlert className="h-6 w-6" />
-        <h3 className="mt-4 font-semibold">
-          {t("No asset workspace permission")}
-        </h3>
-        <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-          {t("creative.run.read is required to see character production.")}
-        </p>
-      </section>
-    );
+    return <CharacterAssetStudioNoPermission />;
   if (loading)
-    return (
-      <section
-        aria-busy="true"
-        className="grid min-h-80 place-items-center rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
-        role="status"
-      >
-        <span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
-          <Loader2 className="h-4 w-4 animate-spin" />{" "}
-          {t("Loading character assets")}
-        </span>
-      </section>
-    );
-  const runIntentNeedsReconciliation = Boolean(
-    runCreationIntent &&
-    (runCreationIntent.status === "reconciliation_required" ||
-      !creativeRunCreateRequestSchema.safeParse(
-        runCreationIntent.requestSnapshot,
-      ).success),
-  );
-  const generationActionLabel = runIntentNeedsReconciliation
-    ? "Reconcile saved request"
-    : runCreationIntent?.status === "outcome_unknown" ||
-        runCreationIntent?.status === "submitting"
-      ? "Resume generation"
-      : runCreationIntent?.status === "committed_projection_pending"
-        ? "Verify created Run"
-        : unconfirmedOperations.length > 0
-          ? "Generation result awaiting confirmation"
-          : imageRequestInProgress
-          ? "Image request in progress"
-          : null;
-  const generationActionText = generationActionLabel
-    ? t(generationActionLabel)
-    : !bootstrapMode && batchCount > 1
-      ? t("Generate {count} images", { count: batchCount })
-      : t("Generate {count} {assetType}", { count: 1, assetType: t(activeConfig.pluralLabel) });
-  const generationActionDescriptionId = `character-generation-action-${data.character.id}`;
-  const generationActionDisabled =
-    !canUseGenerationAction ||
-    unconfirmedOperations.length > 0 ||
-    busy !== null ||
-    (!runCreationIntent && !briefs[activePurpose].trim()) ||
-    Boolean(selectionMutationIntent);
-  const generationActionDescription =
-    unconfirmedOperations.length > 0
-      ? "The provider result is not confirmed. Check the generation task before starting another image."
-      : busy !== null
-      ? "Wait for the current image-production action to finish."
-      : selectionMutationIntent
-          ? "Resolve the saved selection before starting another generation."
-          : !permissions.create
-            ? "creative.run.create permission is required."
-            : !runCreationIntent && !briefs[activePurpose].trim()
-              ? "Add a focused generation brief first."
-              : bootstrapMode && !bootstrapProfile
-                ? "Publish an active text-to-image bootstrap profile first."
-                : bootstrapMode && activePurpose !== "character_cover"
-                  ? "Commit the first identity portrait before generating the remaining asset pack."
-                  : productionBlocked
-                    ? "Complete the Character image-readiness actions first."
-                    : refreshWarning
-                      ? "Refresh the workspace before starting another generation."
-                      : !qualifiedRoute && !bootstrapMode
-                        ? "Qualify a generation route for this Character first."
-                        : "The generation runtime is checked before any Run is created.";
+    return <CharacterAssetStudioLoading />;
+  const generationAction = characterAssetGenerationAction({
+    activePurpose,
+    batchCount,
+    bootstrapMode,
+    bootstrapProfile,
+    brief: briefs[activePurpose],
+    busy,
+    canCreate: permissions.create,
+    canUseGenerationAction,
+    characterId: data.character.id,
+    imageRequestInProgress,
+    productionBlocked,
+    qualifiedRoute,
+    refreshWarning,
+    runCreationIntent,
+    selectionMutationIntent,
+    t,
+    unconfirmedOperations,
+  });
 
   return (
     <div className="space-y-4 pb-12">
-      {error ? (
-        <p
-          className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-          {t(error)}
-        </p>
-      ) : null}
-      {statusMessage ? (
-        <p
-          className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          role="status"
-        >
-          {t(statusMessage)}
-        </p>
-      ) : null}
+      <CharacterAssetStudioAlerts error={error} statusMessage={statusMessage} />
       {!recurringProductionReady ? (
-        <section
-          aria-labelledby="asset-pack-title"
-          className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
-        >
-          <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
-                {t(
-                  bootstrapMode
-                    ? "First identity portrait"
-                    : productionBlocked
-                      ? imageProductionRepairable
-                        ? "Enable image production"
-                        : "Image production setup"
-                      : "Ready for ongoing image production",
-                )}
-              </p>
-              <h3 className="mt-1 text-xl font-semibold" id="asset-pack-title">
-                {t(
-                  bootstrapMode
-                    ? "Establish the face customers will recognize"
-                    : productionBlocked
-                      ? imageProductionRepairable
-                        ? "Use the current live portrait for future image generation"
-                        : "Finish visual setup before creating more images"
-                      : "{name}'s images",
-                  { name: subject.name },
-                )}
-              </h3>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-                {t(
-                  bootstrapMode
-                    ? "Generate the first portrait without references, compare the results, then use one as identity version {version}."
-                    : productionBlocked
-                      ? imageProductionRepairable
-                        ? "Seal the existing live portrait as the reusable identity reference. Current live images and releases will not change."
-                        : "Complete the current visual setup action once. Existing live images and releases will not change."
-                      : "Generate images from the current identity, compare them, and choose which to use in the draft image set.",
-                  { version: identityBootstrap.nextIdentityVersion },
-                )}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <WorkspaceButton
-                disabled={busy !== null}
-                onClick={() => void refreshWorkspace()}
-              >
-                <RefreshCcw className="h-4 w-4" /> {t("Refresh")}
-              </WorkspaceButton>
-              {bootstrapMode ? (
-                <WorkspaceButton
-                  aria-describedby={
-                    generationActionDisabled
-                      ? generationActionDescriptionId
-                      : undefined
-                  }
-                  disabled={generationActionDisabled}
-                  onClick={() => void createRun(activePurpose)}
-                  tone="primary"
-                >
-                  <WandSparkles className="h-4 w-4" /> {generationActionText}
-                </WorkspaceButton>
-              ) : null}
-            </div>
-          </div>
-          {generationActionDisabled ? (
-            <p className="sr-only" id={generationActionDescriptionId}>
-              {t(generationActionDescription)}
-            </p>
-          ) : null}
-          {bootstrapMode ? (
-            <div
-              className={cn(
-                "mx-4 mb-4 rounded-lg p-3 text-sm sm:mx-5",
-                bootstrapProfile
-                  ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
-                  : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
-              )}
-            >
-              <p>
-                {bootstrapProfile
-                  ? t(
-                      identityBootstrap.state === "recoverable_empty_history"
-                        ? "No reference image is needed. Your selected portrait becomes identity version {version}; earlier candidates remain in history."
-                        : "No reference image is needed. Your selected portrait becomes the reference for later images.",
-                      { version: identityBootstrap.nextIdentityVersion },
-                    )
-                  : t(
-                      "No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.",
-                    )}
-              </p>
-              {bootstrapProfile ? (
-                <p className="mt-1 text-xs">
-                  {t(
-                    "The generation runtime is checked before any Run is created.",
-                  )}
-                </p>
-              ) : null}
-            </div>
-          ) : data.project.draftAssetRouteAuthority?.status === "stale" ? (
-            <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-5 sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                {t(
-                  "The active image route changed. {count} selected assets remain in history but cannot be published.", { count: data.project.draftAssetRouteAuthority.stalePurposes.length },
-                )}
-              </span>
-              <WorkspaceButton
-                disabled={!canGenerate || busy !== null}
-                onClick={regenerateUnderCurrentRoute}
-              >
-                {regenerateLabel}
-              </WorkspaceButton>
-            </div>
-          ) : productionBlocked ? (
-            <div className="mx-4 mb-4 sm:mx-5">
-              <ImageProductionReadinessCard
-                blockers={data.visual.readiness.blockers}
-                canRepair={
-                  data.visual.imageReadiness?.state === "repairable" &&
-                  permissions.selectDraft
-                }
-                descriptionId={readinessDescriptionId}
-                onContinue={() => onContinue("visual")}
-                onRepair={() => void prepareImageProduction()}
-                repairing={busy === "prepare"}
-              />
-              {data.visual.imageReadiness?.state === "repairable" ? (
-                <ImagePackResetNotice count={draftSelectedImageCount(data)} />
-              ) : null}
-            </div>
-          ) : null}
-        </section>
+        <CharacterAssetStudioSetupPanel
+          bootstrapMode={bootstrapMode}
+          busy={busy}
+          canGenerate={canGenerate}
+          canSelectDraft={permissions.selectDraft}
+          data={data}
+          generationAction={generationAction}
+          imageProductionRepairable={imageProductionRepairable}
+          onContinueVisual={() => onContinue("visual")}
+          onGenerate={() => void createRun(activePurpose)}
+          onPrepare={() => void prepareImageProduction()}
+          onRefresh={() => void refreshWorkspace()}
+          onRegenerate={regenerateUnderCurrentRoute}
+          productionBlocked={productionBlocked}
+          readinessDescriptionId={readinessDescriptionId}
+          regenerateLabel={regenerateLabel}
+          subjectName={subject.name}
+        />
       ) : null}
 
       {recurringProductionReady &&
       data.project.draftAssetRouteAuthority?.status === "stale" ? (
-        <div className="flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between">
-          <span>
-            {t(
-              "The active image route changed. {count} selected assets remain in history but cannot be published.", { count: data.project.draftAssetRouteAuthority.stalePurposes.length },
-            )}
-          </span>
-          <WorkspaceButton
-            disabled={!canGenerate || busy !== null}
-            onClick={regenerateUnderCurrentRoute}
-          >
-            {regenerateLabel}
-          </WorkspaceButton>
-        </div>
+        <CharacterAssetRouteStaleNotice
+          className="flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"
+          disabled={!canGenerate || busy !== null}
+          label={regenerateLabel}
+          onRegenerate={regenerateUnderCurrentRoute}
+          staleCount={data.project.draftAssetRouteAuthority.stalePurposes.length}
+        />
       ) : null}
 
       <IdentityRail data={data} onRepair={() => onContinue("visual")} />
 
       {recurringProductionReady && candidates.length > 0 ? (
-        <section aria-label={t("Available image candidates")} className="flex flex-wrap gap-3">
-          {candidates.map(({ purpose, asset }) => (
-            <div className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-2" key={purpose}>
-              <AssetImage alt={t(purposeConfig[purpose].label)} className="h-14 w-14 rounded object-cover" src={asset.thumbnailUrl ?? asset.url} />
-              <WorkspaceButton
-                disabled={!permissions.selectDraft || busy !== null || mutationContextLocked}
-                onClick={() => void selection.selectLibraryAsset(purpose, asset, () => {
-                  const next = missingPurposes.find((missing) => missing !== purpose);
-                  if (next) choosePurpose(next);
-                  else onContinue("release");
-                })}
-              >
-                {t("Use candidate for {slot}", { slot: t(purposeConfig[purpose].label) })}
-              </WorkspaceButton>
-            </div>
-          ))}
-        </section>
+        <LibraryCandidateStrip
+          candidates={candidates}
+          disabled={!permissions.selectDraft || busy !== null || mutationContextLocked}
+          onSelect={(purpose, asset) => void selection.selectLibraryAsset(purpose, asset, () => {
+            const next = missingPurposes.find((missing) => missing !== purpose);
+            if (next) choosePurpose(next);
+            else onContinue("release");
+          })}
+        />
       ) : null}
 
       {canGenerateMissing && generationPurposes.length > 0 ? (
-        <div
-          className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
-          data-testid="generate-missing-images"
-        >
-          <span>
-            {t("Still needs: {purposes}. Default briefs are ready, and you can adjust them below.", {
-              purposes: generationPurposes.map((purpose) => t(purposeConfig[purpose].label)).join(" · "),
-            })}
-          </span>
-          <WorkspaceButton disabled={busy !== null} onClick={() => void generateMissingImages()} tone="primary">
-            {busy === "generate" ? <Loader2 className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
-            {t("Generate missing images")}
-          </WorkspaceButton>
-        </div>
+        <GenerateMissingImagesBar
+          busy={busy}
+          estimates={data.visual.imageGenerationEstimates}
+          onGenerate={() => void generateMissingImages()}
+          profileKey={runRequestDraft(generationPurposes[0]).profileId}
+          purposes={generationPurposes}
+        />
       ) : null}
 
       {runCreationIntent?.committedTargetId ? (
-        <p
-          className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm"
-          role="status"
-        >
-          {t("Created Run receipt:")}{" "}
-          <span className="font-medium">
-            {runCreationIntent.committedTargetId}
-          </span>
-          {t(
-            ". Verify its projection before starting another generation intent.",
-          )}
-        </p>
+        <RunReceiptNotice runId={runCreationIntent.committedTargetId} />
       ) : null}
       {selectionMutationIntent ? (
-        <div
-          className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
-          role="status"
-        >
-          <span>
-            {selection.needsReconciliation
-              ? t(
-                  "This saved selection is aged or no longer matches the active contract. Reconcile its server receipt before another selection.",
-                )
-              : selectionMutationIntent.status ===
-                  "committed_projection_pending"
-                ? t(
-                    "Selection receipt is committed; verify it against current Character authority.",
-                  )
-                : t(
-                    "Asset selection is ready to resume with the same request key.",
-                  )}
-          </span>
-          <WorkspaceButton
-            disabled={!permissions.selectDraft || busy !== null}
-            onClick={() => void selection.resume()}
-          >
-            {selection.needsReconciliation
-              ? t("Reconcile selection")
-              : selectionMutationIntent.status ===
-                  "committed_projection_pending"
-                ? t("Verify selection")
-                : t("Resume selection")}
-          </WorkspaceButton>
-        </div>
+        <SelectionIntentNotice
+          disabled={!permissions.selectDraft || busy !== null}
+          needsReconciliation={selection.needsReconciliation}
+          onResume={() => void selection.resume()}
+          status={selectionMutationIntent.status}
+        />
       ) : null}
       {refreshWarning ? (
-        <div
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
-          role="status"
-        >
-          <span>{t(refreshWarning)}</span>
-          <WorkspaceButton disabled={busy !== null} onClick={() => void refreshWorkspace()}>
-            <RefreshCcw className="h-4 w-4" /> {t("Refresh")}
-          </WorkspaceButton>
-        </div>
+        <RefreshWarningNotice
+          disabled={busy !== null}
+          onRefresh={() => void refreshWorkspace()}
+          warning={refreshWarning}
+        />
       ) : null}
       <div className={characterAssetStudioLayoutClass}>
-        <section aria-labelledby="candidate-title" className="min-w-0">
-          <div className="flex flex-wrap items-end justify-between gap-3 pb-3">
-            <div>
-              <h3 className="font-semibold" id="candidate-title">
-                {productionBlocked
-                  ? t("Candidate history is paused")
-                  : activeRunDetail?.items.length
-                    ? t("{count} recent images", {
-                        count: activeRunDetail.items.length,
-                      })
-                    : existingImages.length
-                      ? t("{count} images", { count: existingImages.length })
-                      : t("Ready for a first run")}
-              </h3>
-              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                {t(activeConfig.label)}
-              </p>
-            </div>
-            {activeRunDetail ? (
-              <div className="flex flex-wrap gap-2">
-                {activeRunDetail.items.some((item) => !item.asset && unconfirmedOperations.some((operation) => operation.requestId === item.lineage?.requestId))
-                  ? <span className="rounded bg-[var(--ad-yellow-bg)] px-2 py-1 text-xs">{t("Generation result awaiting confirmation")}</span>
-                  : <StatusBadge value={activeRunDetail.executionOutcome} />}
-              </div>
-            ) : null}
-          </div>
-
-          {!bootstrapMode &&
-          qualifiedRoute &&
-          selectedItem &&
-          !variationRouteReady ? (
-            <div className="mt-3 flex flex-col gap-2 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-xs leading-5 text-[var(--ad-blue-text)] sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="font-semibold">{t("More like this unavailable")}</p>
-                <p className="mt-1">
-                  {t(
-                    characterSourceVariationBlockerMessage(variationRouteBlocker),
-                  )}
-                </p>
-                <p className="mt-1">
-                  {t(characterSourceVariationAvailabilityMessage())}
-                </p>
-              </div>
-              <WorkspaceButton onClick={() => onContinue("visual")}>
-                {t("Review generation route")}
-              </WorkspaceButton>
-            </div>
-          ) : null}
-
-          <div className="mt-1">
-            {productionBlocked ? (
-              <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 py-8 text-center text-[var(--ad-text-muted)]">
-                <div>
-                  <ShieldAlert className="mx-auto h-6 w-6" />
-                  <p className="mt-3 text-sm font-semibold">
-                    {t("Image production is waiting for visual setup")}
-                  </p>
-                  <p className="mt-1 max-w-md text-xs leading-5">
-                    {t(
-                      "Complete the readiness steps above; candidate generation will appear here when the character is ready.",
-                    )}
-                  </p>
-                </div>
-              </div>
-            ) : selectedItem?.asset && comparisonItem?.asset ? (
-              <CandidateComparisonStage
-                activeItem={selectedItem}
-                activePurpose={activePurpose}
-                comparisonItem={comparisonItem}
-                onClose={() => setComparisonItemId(null)}
-                onUseComparison={() => {
-                  const comparisonIndex =
-                    activeRunDetail?.items.findIndex(
-                      (item) => item.id === comparisonItem.id,
-                    ) ?? -1;
-                  if (comparisonIndex >= 0) activateCandidate(comparisonIndex);
-                }}
-                subjectName={subject.name}
-              />
-            ) : activeRunDetail?.items.length ? (
-              <CandidateBatchGrid
-                activeItemId={selectedItem?.id ?? null}
-                activePurpose={activePurpose}
-                comparisonItemId={comparisonItemId}
-                disabled={mutationContextLocked}
-                items={activeRunDetail.items}
-                onActivate={activateCandidate}
-                onCompare={toggleCandidateComparison}
-                runCreatedAt={activeRunDetail.createdAt}
-                runId={activeRunDetail.id}
-                selectedPackAssetId={selectedPackAssetId}
-                subjectName={subject.name}
-                unconfirmedOperations={unconfirmedOperations}
-              />
-            ) : selectedExistingImage ? (
-              <div aria-label={t("Character image library")}>
-                <div
-                  className="overflow-hidden rounded-lg bg-black/[0.04]"
-                  style={{ height: "min(500px, 60vh)" }}
-                >
-                  <AssetImage
-                    alt={t("{name} image {number}", {
-                      name: subject.name,
-                      number: existingImages.indexOf(selectedExistingImage) + 1,
-                    })}
-                    className="h-full w-full object-contain"
-                    src={selectedExistingImage.url}
-                  />
-                </div>
-                <div
-                  className="mt-3 flex gap-2 overflow-x-auto pb-1"
-                  role="list"
-                >
-                  {existingImages.map((image, index) => (
-                    <div
-                      className="w-24 shrink-0"
-                      key={image.id}
-                      role="listitem"
-                    >
-                      <button
-                        aria-label={t("Open image {number}", {
-                          number: index + 1,
-                        })}
-                        aria-pressed={image.id === selectedExistingImage.id}
-                        className={cn(
-                          "w-full overflow-hidden rounded-md border bg-black/[0.04] p-0.5 transition focus-visible:outline focus-visible:outline-2",
-                          image.id === selectedExistingImage.id
-                            ? "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]"
-                            : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
-                        )}
-                        onClick={() => setSelectedExistingImageId(image.id)}
-                        type="button"
-                      >
-                        <AssetImage
-                          alt={t("{name} thumbnail {number}", {
-                            name: subject.name,
-                            number: index + 1,
-                          })}
-                          className="aspect-square w-full rounded-[4px] object-cover"
-                          src={image.thumbnailUrl}
-                        />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 text-center text-[var(--ad-text-muted)]">
-                <div>
-                  <Sparkles className="mx-auto h-7 w-7" />
-                  <p className="mt-3 text-sm">
-                    {t("Generate an image, then choose whether to use it.")}
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {recurringProductionReady &&
-        workspaceMode === "library" ? (
-          <aside
-            className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24"
-            aria-labelledby="new-image-title"
-          >
-            <div
-                className="flex border-b border-[var(--ad-border)] [&>[role=tab]]:scroll-mt-24"
-                role="tablist"
-                aria-label={t("Image inspector mode")}
-              >
-                <button
-                  aria-selected={false}
-                  className="min-h-11 border-b-2 border-transparent px-3 text-sm text-[var(--ad-text-muted)] disabled:opacity-40"
-                  disabled={!selectedItem?.asset}
-                  onClick={() => setWorkspaceMode("review")}
-                  role="tab"
-                  type="button"
-                >
-                  {t("Inspect")}
-                </button>
-                <button
-                  aria-selected="true"
-                  className="min-h-11 border-b-2 border-[var(--ad-ink)] px-3 text-sm font-semibold"
-                  role="tab"
-                  type="button"
-                >
-                  {t("New image")}
-                </button>
-              </div>
-            <h3 className="sr-only" id="new-image-title">
-              {t("New image")}
-            </h3>
-            <label className="mt-5 block text-xs font-semibold text-[var(--ad-text-muted)]">
-              {t("What should be different this time?")}
-              <textarea
-                aria-label={`${t(activeConfig.label)} ${t("creative brief")}`}
-                className={`${textAreaClass} mt-1 min-h-36`}
-                disabled={mutationContextLocked}
-                onChange={(event) =>
-                  setBriefs((current) => ({
-                    ...current,
-                    [activePurpose]: event.target.value,
-                  }))
-                }
-                value={briefs[activePurpose]}
-              />
-            </label>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]">
-              <span>{t("Aspect ratio")}: {orientationForPurpose(activePurpose) ?? t("Default")}</span>
-              <div aria-label={t("Images per request")} className="inline-flex items-center gap-1" role="group">
-                <span className="mr-1 font-semibold">{t("Images per request")}</span>
-                {([1, 2, 4] as const).map((option) => (
-                  <button
-                    aria-pressed={batchCount === option}
-                    className={cn(
-                      "min-h-7 min-w-7 rounded border px-2 font-semibold",
-                      batchCount === option
-                        ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-[var(--ad-surface)]"
-                        : "border-[var(--ad-border)] text-[var(--ad-ink)] hover:bg-black/[0.03]",
-                    )}
-                    disabled={mutationContextLocked}
-                    key={option}
-                    onClick={() => setBatchCount(option)}
-                    type="button"
-                  >
-                    {option}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <details className="mt-4 border-t border-[var(--ad-border)] pt-3 text-xs">
-              <summary className="cursor-pointer font-semibold">
-                {t("Settings")}
-              </summary>
-              <label className="mt-3 block font-semibold text-[var(--ad-text-muted)]">
-                {t("Negative prompt")}
-                <textarea
-                  aria-label={t("Negative prompt")}
-                  className={`${textAreaClass} mt-1 min-h-24`}
-                  disabled={mutationContextLocked}
-                  onChange={(event) =>
-                    setNegativePrompts((current) => ({
-                      ...current,
-                      [activePurpose]: event.target.value,
-                    }))
-                  }
-                  value={negativePrompts[activePurpose]}
-                />
-              </label>
-              <p className="mt-2 leading-5 text-[var(--ad-text-muted)]">
-                {t(
-                  "Identity and quality safeguards are automatic. Add only exclusions specific to this image.",
-                )}
-              </p>
-            </details>
-            <WorkspaceButton
-              aria-describedby={
-                generationActionDisabled
-                  ? generationActionDescriptionId
-                  : undefined
-              }
-              className="mt-5 w-full justify-center"
-              disabled={generationActionDisabled}
-              onClick={() => void createRun(activePurpose, [], batchCount)}
-              tone="primary"
-            >
-              <WandSparkles className="h-4 w-4" /> {generationActionText}
-            </WorkspaceButton>
-            {selectedItem?.asset ? (
-              <button
-                className="mt-3 min-h-10 w-full text-center text-xs font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"
-                onClick={() => setWorkspaceMode("review")}
-                type="button"
-              >
-                {t("Cancel")}
-              </button>
-            ) : null}
-          </aside>
-        ) : !productionBlocked && selectedItem?.asset ? (
-          <aside
-            className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24"
-            aria-label={t("Current candidate decision inspector")}
-          >
-            {recurringProductionReady ? (
-              <div
-                className="flex border-b border-[var(--ad-border)] [&>[role=tab]]:scroll-mt-24"
-                role="tablist"
-                aria-label={t("Image inspector mode")}
-              >
-                <button
-                  aria-selected="true"
-                  className="min-h-11 border-b-2 border-[var(--ad-ink)] px-3 text-sm font-semibold"
-                  role="tab"
-                  type="button"
-                >
-                  {t("Inspect")}
-                </button>
-                <button
-                  aria-selected={false}
-                  className="min-h-11 border-b-2 border-transparent px-3 text-sm text-[var(--ad-text-muted)]"
-                  onClick={() => setWorkspaceMode("library")}
-                  role="tab"
-                  type="button"
-                >
-                  {t("New image")}
-                </button>
-              </div>
-            ) : null}
-            <p className="text-sm leading-6 text-[var(--ad-text-muted)]">
-              {t("Choose the image that fits this Character. Selection updates the draft; publishing updates the live Character.")}
-            </p>
-            {!permissions.selectDraft && busy === null ? <p className="text-sm">{t("Character editing permission is required to select an image.")}</p> : null}
-          </aside>
-        ) : null}
+        <CharacterAssetCandidatePanel
+          activePurpose={activePurpose}
+          activeRunDetail={activeRunDetail}
+          bootstrapMode={bootstrapMode}
+          comparisonItem={comparisonItem}
+          comparisonItemId={comparisonItemId}
+          existingImages={existingImages}
+          mutationContextLocked={mutationContextLocked}
+          onActivate={activateCandidate}
+          onCloseComparison={() => setComparisonItemId(null)}
+          onCompare={toggleCandidateComparison}
+          onContinueVisual={() => onContinue("visual")}
+          onSelectExistingImage={setSelectedExistingImageId}
+          productionBlocked={productionBlocked}
+          qualifiedRoute={qualifiedRoute}
+          selectedExistingImage={selectedExistingImage}
+          selectedItem={selectedItem}
+          selectedPackAssetId={selectedPackAssetId}
+          subjectName={subject.name}
+          unconfirmedOperations={unconfirmedOperations}
+          variationRouteBlocker={variationRouteBlocker}
+          variationRouteReady={variationRouteReady}
+        />
+        <CharacterAssetInspector
+          activePurpose={activePurpose}
+          batchCount={batchCount}
+          bootstrapMode={bootstrapMode}
+          briefs={briefs}
+          busy={busy}
+          canSelectDraft={permissions.selectDraft}
+          estimates={data.visual.imageGenerationEstimates}
+          generationAction={generationAction}
+          mutationContextLocked={mutationContextLocked}
+          negativePrompts={negativePrompts}
+          onGenerate={() => void createRun(activePurpose, [], batchCount)}
+          orientation={orientationForPurpose(activePurpose)}
+          productionBlocked={productionBlocked}
+          profileKey={bootstrapMode ? bootstrapProfile?.profileKey : qualifiedRoute?.generationProfileKey}
+          recurringProductionReady={recurringProductionReady}
+          selectedItem={selectedItem}
+          setBatchCount={setBatchCount}
+          setBriefs={setBriefs}
+          setNegativePrompts={setNegativePrompts}
+          setWorkspaceMode={setWorkspaceMode}
+          workspaceMode={workspaceMode}
+        />
       </div>
 
       {selectedItem &&
       !productionBlocked &&
       (!recurringProductionReady || workspaceMode === "review" || selectedItem.asset) ? (
-        <section
-          aria-label={t("Current candidate actions")}
-          className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-              {t("Current decision")}
-            </p>
-            <p className="mt-1 truncate text-sm font-semibold">
-              {selectedItem
-                ? t("Candidate {number} · {state}", {
-                    number: selectedItem.ordinal + 1,
-                    state: t(candidateState(selectedItem, unconfirmedOperations.some((operation) => operation.requestId === selectedItem.lineage?.requestId))),
-                  })
-                : t("No active candidate")}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {comparisonItem ? (
-              <WorkspaceButton onClick={() => setComparisonItemId(null)}>
-                <X className="h-4 w-4" />
-                <span className="sm:hidden">{t("Image")}</span>
-                <span className="hidden sm:inline">
-                  {t("Back to generated image")}
-                </span>
-              </WorkspaceButton>
-            ) : null}
-            <WorkspaceButton
-              disabled={
-                mutationContextLocked ||
-                bootstrapMode ||
-                !variationRouteReady ||
-                !canGenerate ||
-                busy !== null ||
-                !selectedItem?.asset ||
-                !isApprovedItem
-              }
-              onClick={() =>
-                selectedItem?.asset
-                  ? void createRun(activePurpose, [selectedItem.asset.id])
-                  : undefined
-              }
-            >
-              <Sparkles className="h-4 w-4" />
-              <span className="sm:hidden">{t("Similar")}</span>
-              <span className="hidden sm:inline">{t("More like this")}</span>
-            </WorkspaceButton>
-            {selectedItem?.asset ? (
-              <WorkspaceButton disabled={mutationContextLocked || !canUseDecisionAction || busy !== null || Boolean(refreshWarning)}
-                onClick={() => void approveAndContinue()} tone="primary">
-                {busy === "select" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                {t(decisionActionLabel)}
-              </WorkspaceButton>
-            ) : null}
-          </div>
-        </section>
+        <CharacterAssetDecisionBar
+          bootstrapMode={bootstrapMode}
+          busy={busy}
+          canGenerate={canGenerate}
+          canUseDecisionAction={canUseDecisionAction}
+          comparisonItem={comparisonItem}
+          decisionActionLabel={decisionActionLabel}
+          isApprovedItem={isApprovedItem}
+          mutationContextLocked={mutationContextLocked}
+          onApprove={() => void approveAndContinue()}
+          onCloseComparison={() => setComparisonItemId(null)}
+          onGenerateVariation={(assetId) => void createRun(activePurpose, [assetId])}
+          refreshWarning={refreshWarning}
+          selectedItem={selectedItem}
+          unconfirmedOperations={unconfirmedOperations}
+          variationRouteReady={variationRouteReady}
+        />
       ) : null}
 
       {bootstrapMode ? (
-        <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-          <summary className="cursor-pointer text-sm font-semibold">
-            {t("Adjust the creative brief")}
-          </summary>
-          <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-            {t(
-              "Keep intent human-readable. Identity, references, workflow, and route stay automatic.",
-            )}
-          </p>
-          <textarea
-            aria-label={`${t(activeConfig.label)} ${t("creative brief")}`}
-            className={`${textAreaClass} mt-3`}
-            disabled={mutationContextLocked}
-            onChange={(event) =>
-              setBriefs((current) => ({
-                ...current,
-                [activePurpose]: event.target.value,
-              }))
-            }
-            value={briefs[activePurpose]}
-          />
-        </details>
+        <BootstrapBriefEditor
+          activePurpose={activePurpose}
+          briefs={briefs}
+          mutationContextLocked={mutationContextLocked}
+          setBriefs={setBriefs}
+        />
       ) : null}
-      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <summary className="cursor-pointer text-sm font-semibold">
-          {t("Recent runs and technical lineage")}
-        </summary>
-        <div className="mt-3 space-y-2">
-          {runs.some((run) => run.purpose === activePurpose) ? (
-            runs.filter((run) => run.purpose === activePurpose).map((run) => (
-              <button
-                className={cn(
-                  "w-full rounded-lg border p-3 text-left text-xs",
-                  selectedRunId === run.id
-                    ? "border-[var(--ad-ink)] bg-black/[0.03]"
-                    : "border-[var(--ad-border)]",
-                )}
-                disabled={mutationContextLocked}
-                key={run.id}
-                onClick={selectHistoryRun}
-                type="button"
-                value={run.id}
-              >
-                <span className="flex items-center justify-between gap-3">
-                  <strong>
-                    {isCharacterAssetPurpose(run.purpose)
-                      ? t(purposeConfig[run.purpose].label)
-                      : t(run.purpose)}
-                    {pinnedRunIds.has(run.id)
-                      ? ` · ${t("Selected in draft")}`
-                      : ""}
-                  </strong>
-                  <span>
-                    {new Date(run.updatedAt).toLocaleString(
-                      adminDateLocale(locale),
-                    )}
-                  </span>
-                </span>
-                <span className="mt-1 block break-all text-[var(--ad-text-muted)]">
-                  {run.id} · {run.counts.generated}/{run.counts.total}{" "}
-                  {t("generated")} · {run.counts.approved} {t("approved")}
-                </span>
-              </button>
-            ))
-          ) : (
-            <p className="text-xs text-[var(--ad-text-muted)]">
-              {t("No production history for this character.")}
-            </p>
-          )}
-        </div>
-        {historyCursor ? <WorkspaceButton disabled={loadingHistory || mutationContextLocked} onClick={() => {
+      <CharacterAssetRunHistory
+        activePurpose={activePurpose}
+        bootstrapMode={bootstrapMode}
+        bootstrapProfile={bootstrapProfile}
+        historyCursor={historyCursor}
+        loadingHistory={loadingHistory}
+        mutationContextLocked={mutationContextLocked}
+        onLoadMore={(cursor) => {
           setLoadingHistory(true);
-          void loadRuns({ cursor: historyCursor }).catch((cause: unknown) => {
+          void loadRuns({ cursor }).catch((cause: unknown) => {
             if (!isProjectionRequestCancellation(cause)) setError(cause instanceof Error ? cause.message : "Character assets could not be loaded");
           }).finally(() => setLoadingHistory(false));
-        }}>{t("Load more")}</WorkspaceButton> : null}
-        {bootstrapProfile || qualifiedRoute ? (
-          <p className="mt-4 break-all border-t border-[var(--ad-border)] pt-4 text-xs text-[var(--ad-text-muted)]">
-            {t("Current image route")}: {bootstrapMode
-              ? `${bootstrapProfile?.label ?? ""} · ${bootstrapProfile?.orientation ?? ""}`
-              : qualifiedRoute?.generationProfileKey}
-          </p>
-        ) : null}
-        {selectedItem ? (
-          <dl className="mt-4 grid gap-2 border-t border-[var(--ad-border)] pt-4 text-xs sm:grid-cols-2">
-            <div>
-              <dt className="text-[var(--ad-text-muted)]">
-                {t("Generation profile")}
-              </dt>
-              <dd className="mt-1 break-all">
-                {selectedItem.lineage.generationProfileKey ?? t("Pending")}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[var(--ad-text-muted)]">{t("Workflow")}</dt>
-              <dd className="mt-1 break-all">
-                {selectedItem.lineage.workflowKey ?? t("Pending")}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[var(--ad-text-muted)]">{t("Request")}</dt>
-              <dd className="mt-1 break-all">
-                {selectedItem.lineage.requestId ?? t("Pending")}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[var(--ad-text-muted)]">
-                {t("Provider request / Comfy prompt")}
-              </dt>
-              <dd className="mt-1 break-all">
-                {selectedItem.lineage.providerRequestId ?? t("Pending")}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt>
-              <dd className="mt-1 break-all">
-                {selectedItem.asset?.id ?? t("Pending")}
-              </dd>
-            </div>
-          </dl>
-        ) : null}
-      </details>
+        }}
+        pinnedRunIds={pinnedRunIds}
+        qualifiedRoute={qualifiedRoute}
+        runs={runs}
+        selectHistoryRun={selectHistoryRun}
+        selectedItem={selectedItem}
+        selectedRunId={selectedRunId}
+      />
     </div>
   );
 }

@@ -73,7 +73,7 @@ const SECTION_RENDERERS: Record<AdminSectionId, (ctx: SectionContext) => ReactNo
 
   "content/official": (ctx) => <CharacterWorkspace actorId={ctx.actorId} canCreateCharacters={ctx.canCreateCharacters} permissions={ctx.permissions} view={ctx.view} />,
   "content/templates": (ctx) => <StartersSection
-    canAssist={ctx.permissions.has("content.official.write")}
+    canAssist={ctx.canAssistCharacterDrafts}
     canWrite={ctx.permissions.has("content.template.write")}
     view={ctx.view}
   />,
@@ -163,6 +163,11 @@ const SECTION_RENDERERS: Record<AdminSectionId, (ctx: SectionContext) => ReactNo
   "generation/config": (ctx) => <GenerationConfigWorkspace permissions={{
     manageProfiles: ctx.permissions.has("generation.config.write"),
     manageFlags: ctx.permissions.has("config.feature_flag.write"),
+    voiceDefaults: {
+      read: adminV2OperationAllowed("GET /api/v2/admin/voice-defaults", ctx.permissions),
+      write: adminV2OperationAllowed("PUT /api/v2/admin/voice-defaults", ctx.permissions),
+      preview: adminV2OperationAllowed("POST /api/v2/admin/voice-defaults/preview", ctx.permissions),
+    },
   }} />,
   "generation/recipes": (ctx) => <RecipesSection canWrite={ctx.permissions.has("generation.config.write")} view={ctx.view} />,
   "generation/presets": (ctx) => <PresetsSection canWrite={ctx.permissions.has("generation.config.write")} view={ctx.view} />,

@@ -4,6 +4,7 @@ import {
   characterImageQualificationStateSchema,
 } from "@idream/shared/admin";
 import { translateAdmin } from "@/components/admin/i18n";
+import { CHARACTER_IMMEDIATE_EFFECT_COPY } from "./character-immediate-effects";
 
 describe("Character operator Chinese copy", () => {
   it("translates validation and authority status instead of leaking English", () => {
@@ -49,6 +50,20 @@ describe("Character operator Chinese copy", () => {
     ]) {
       const key = value.replaceAll("_", " ");
       expect(translateAdmin("zh", key), value).not.toBe(key);
+    }
+  });
+
+  // SPEC: 绕过 Release 的改动在动作处和发布页用同一句话；这些 key 有的经 t(常量) 取值，静态扫描看不到。
+  it("translates the immediate-effect copy and the failure retry explanation", () => {
+    expect(translateAdmin("zh", CHARACTER_IMMEDIATE_EFFECT_COPY)).toBe("立即对新会话生效，不随发布。");
+    for (const key of [
+      "Retry happens on the Run page, which keeps the retry command's idempotency record so a refresh or second click cannot start another paid generation. To change the source or brief, create a new video here instead.",
+      "Open run to retry",
+      "Open run details",
+      "Voice defaults",
+      "Inherited by every character",
+    ]) {
+      expect(translateAdmin("zh", key), key).not.toBe(key);
     }
   });
 });

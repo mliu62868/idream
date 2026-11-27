@@ -2,7 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
-import { ADMIN_COMMAND_TARGET_READ_PERMISSIONS, type AdminPageInfo, type AdminPermissionKey, type CharacterPortfolioItem, type DataQualityIssue } from "@idream/shared/admin";
+import { ADMIN_COMMAND_TARGET_READ_PERMISSIONS, type AdminPageInfo, type CharacterLifecycle, type AdminPermissionKey, type CharacterPortfolioItem, type DataQualityIssue } from "@idream/shared/admin";
 import { LayoutGrid, List, Plus, Search } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -40,7 +40,7 @@ import { CharacterFeaturedToggle, FeaturedAuthorityProvider } from "@/features/c
 import { CharacterPerformanceBoard } from "./CharacterPerformanceBoard";
 import { CharacterPortfolioCard, characterPortfolioState, characterReleasePackLabel } from "./CharacterPortfolioCard";
 import { CharacterBatchImport } from "./CharacterBatchImport";
-import { requestServingCommand } from "./character-bulk-operations";
+import { characterCommandFailureMessage, readCharacterCommandStatus, requestCharacterServingCommand } from "./release-command";
 import { characterPrimaryActionCopy } from "./character-primary-action-copy";
 
 // INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
@@ -105,7 +105,9 @@ const ROSTER_VIEWS = [
   ["draft", "Draft"],
   ["live", "Live"],
   ["paused", "Paused"],
-  ["archived", "Archived"],
+  // INTENT: serving=retired 有两种含义：归档草稿（可恢复）与已退役（永久）。分成两个视图。
+  ["archived", "Archived drafts"],
+  ["retired", "Retired"],
 ] as const;
 const WORK_QUEUE_VIEWS = [
   ["attention", "Needs attention"],
@@ -119,11 +121,12 @@ const WORK_QUEUE_VIEWS = [
 type RosterView = (typeof ROSTER_VIEWS)[number][0];
 type QueueView = (typeof WORK_QUEUE_VIEWS)[number][0];
 
-const SERVING_STATE_BY_VIEW: Partial<Record<RosterView, string>> = {
-  draft: "inactive",
+const LIFECYCLE_BY_VIEW: Partial<Record<RosterView, CharacterLifecycle>> = {
+  draft: "draft",
   live: "live",
   paused: "paused",
-  archived: "retired",
+  archived: "archived",
+  retired: "retired",
 };
 
 type PendingServingCommand = {
@@ -148,8 +151,9 @@ function RosterServingCommandStatus({ command, canReadCommand, onSettled }: {
           path: { commandId: command.commandId },
         });
         failedReads.current = 0;
-        if (result.status === "failed" || result.status === "cancelled") error = `Command ${result.status}.`;
-        else if (result.status !== "succeeded") return 1500;
+        const reading = readCharacterCommandStatus(result);
+        if (reading.state === "failed") error = characterCommandFailureMessage(reading.failure);
+        else if (reading.state === "running") return 1500;
       } else {
         // The portfolio grant can confirm the serving state even without command-detail access.
         const result = await adminV2Operation("GET /api/v2/admin/characters/portfolio", {
@@ -185,7 +189,7 @@ function CharacterRoster({
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const [search, setSearch] = useState("");
-  const [servingState, setServingState] = useState("");
+  const [lifecycle, setLifecycle] = useState<CharacterLifecycle | "">("");
   const [attention, setAttention] = useState(false);
   const [workQueue, setWorkQueue] = useState<CharacterPortfolioWorkQueue | "">(
     "",
@@ -267,7 +271,7 @@ function CharacterRoster({
       preserveSearchDraft = false,
     ) => {
       if (!preserveSearchDraft) setSearch(next.search);
-      setServingState(next.servingState ?? "");
+      setLifecycle(next.lifecycle ?? "");
       setAttention(next.attention ?? false);
       setWorkQueue(next.workQueue ?? "");
       setSource(next.source ?? "");
@@ -313,7 +317,7 @@ function CharacterRoster({
     applyQuery(
       {
         search,
-        servingState: servingState || undefined,
+        lifecycle: lifecycle || undefined,
         attention: attention || undefined,
         workQueue: workQueue || undefined,
         source: source || undefined,
@@ -345,13 +349,13 @@ function CharacterRoster({
     applyQuery({ ...applied, cursor: cursorStack.at(-1) || undefined }, "push", previous, true);
   }
 
-  const rosterView = ROSTER_VIEWS.find(([view]) => (SERVING_STATE_BY_VIEW[view] ?? "") === servingState)?.[0] ?? "all";
+  const rosterView = ROSTER_VIEWS.find(([view]) => (LIFECYCLE_BY_VIEW[view] ?? "") === lifecycle)?.[0] ?? "all";
   const queueView = attention ? "attention" : workQueue;
   const viewCounts = portfolio.data?.facets?.viewCounts;
   const rosterQuery = characterPortfolioQuery({ ...applied, cursor: undefined });
 
   function changeRosterView(next: RosterView) {
-    applyQuery({ ...applied, cursor: undefined, servingState: SERVING_STATE_BY_VIEW[next] }, "push", [], true);
+    applyQuery({ ...applied, cursor: undefined, lifecycle: LIFECYCLE_BY_VIEW[next] }, "push", [], true);
   }
 
   function toggleQueue(next: QueueView) {
@@ -405,10 +409,11 @@ function CharacterRoster({
     setQuickBusyId(item.characterId);
     setQuickErrors((current) => current.filter((entry) => entry.characterId !== item.characterId));
     try {
-      const { commandId } = await requestServingCommand({
+      const { commandId } = await requestCharacterServingCommand({
         characterId: item.characterId,
         action,
         entityVersion: item.serving.version,
+        servingState: item.serving.state,
       });
       setQuickCommands((current) => [...current, {
         commandId, characterId: item.characterId, name: item.name,

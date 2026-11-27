@@ -27,6 +27,7 @@ import {
   releasePreviewAssetPackIds,
 } from "./workspace-preview";
 import {
+  characterWorkspaceLastFailedPublish,
   characterWorkspaceReleaseProjection,
   servingDto,
 } from "./workspace-release";
@@ -211,6 +212,13 @@ export async function getCharacterWorkspace(characterId: string, actor?: AdminAc
     ),
   );
   const draftPreviewAssetPackIds = characterAssetPack(project.draftAssetPack);
+  const latestWithdrawal = releases[0]?.status === "withdrawn"
+    ? await prisma.characterReleaseEvent.findFirst({
+        where: { releaseId: releases[0].id, type: "character.release.withdrawn" },
+        orderBy: { occurredAt: "desc" },
+        select: { toState: true, occurredAt: true },
+      })
+    : null;
   const previewAssetIds = [
     ...new Set([
       ...Object.values(draftPreviewAssetPackIds),
@@ -382,6 +390,15 @@ export async function getCharacterWorkspace(characterId: string, actor?: AdminAc
       validationRuns,
       checks,
       monitors,
+    }),
+    lastFailedPublish: characterWorkspaceLastFailedPublish({
+      latestRelease: releases[0] ?? null,
+      latestReleasePack: releasePreviewAssetPackIds(releases[0] ?? null),
+      draftContentVersionId: contents[0]?.id ?? null,
+      draftPack: draftPreviewAssetPackIds,
+      withdrawal: latestWithdrawal,
+      validationRuns,
+      checks,
     }),
     preview: {
       live: isLive ? published : null,

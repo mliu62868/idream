@@ -745,6 +745,50 @@ describe("community collections", () => {
     expect(await response.text()).toBe("admin private preview");
   });
 
+  // SPEC: a Character-scoped bundle reads exactly the images it can list in that Character's operator
+  //       library — never a customer's private chat generation that merely carries the same characterId.
+  it("lets a Character-scoped creator read its library images but not customer media of that Character", async () => {
+    const operatorId = `${P}scoped-library-operator`;
+    const customerId = `${P}scoped-library-customer`;
+    const characterX = `${P}scoped-library-character-x`;
+    const characterY = `${P}scoped-library-character-y`;
+    const adminToken = `${P}scoped-library-token`;
+    for (const id of [operatorId, customerId]) await createUser({ id });
+    for (const id of [characterX, characterY]) await createCharacter({ id, visibility: "private" });
+    await prisma.adminUserGrantBundle.create({ data: {
+      userId: operatorId, bundleKey: "character_creator", scope: { characterIds: [characterX] },
+      createdById: "seed-admin-user", reason: "Verify scoped library media reads",
+    } });
+    await prisma.session.create({ data: { userId: operatorId, token: adminToken, expiresAt: new Date(Date.now() + 100_000) } });
+    const asset = async (id: string, data: { characterId: string; ownerId: string; metadata: Prisma.InputJsonValue }) => {
+      const storageKey = `${id}.webp`;
+      await mkdir(dirname(resolveLocalBlobPath(storageKey)), { recursive: true });
+      await writeFile(resolveLocalBlobPath(storageKey), Buffer.from(id));
+      await prisma.mediaAsset.create({ data: {
+        id, ownerId: data.ownerId, characterId: data.characterId, type: "image",
+        url: `/user-content/${Buffer.from(id).toString("base64url")}/content.webp`, storageKey,
+        contentType: "image/webp", visibility: "private", safetyStatus: "passed",
+        metadata: { providerKey: storageKey, ...(data.metadata as Record<string, unknown>) },
+      } });
+    };
+    const libraryX = `${P}scoped-library-x`;
+    const customerX = `${P}scoped-customer-x`;
+    const libraryY = `${P}scoped-library-y`;
+    await asset(libraryX, { characterId: characterX, ownerId: "seed-admin-user", metadata: { purpose: "character_library" } });
+    await asset(customerX, { characterId: characterX, ownerId: customerId, metadata: {} });
+    await asset(libraryY, { characterId: characterY, ownerId: "seed-admin-user", metadata: { purpose: "character_library" } });
+    const read = (id: string) => dispatchV1(new Request(`http://localhost/api/v1/media/${id}/content`, {
+      headers: { cookie: `idream_admin_session=${adminToken}`, "x-idream-admin-read-authority": "not_applicable" },
+    }), ["media", id, "content"]);
+    const library = await read(libraryX);
+    expect(library.status).toBe(200);
+    expect(await library.text()).toBe(libraryX);
+    // Same Character, but a customer's private generation is not in the operator library.
+    expect((await read(customerX)).status).toBe(403);
+    // Library image of a Character outside the scope.
+    expect((await read(libraryY)).status).toBe(403);
+  });
+
   it("allows a role-user creative bundle to preview another operator's private production asset", async () => {
     const ownerId = `${P}creative-media-owner`;
     const operatorId = `${P}creative-media-operator`;

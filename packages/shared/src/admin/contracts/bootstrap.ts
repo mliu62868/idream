@@ -20,6 +20,9 @@ export const adminBootstrapSchema = z.object({
   permissions: z.array(adminPermissionKeySchema),
   canReadDashboard: z.boolean(),
   canCreateCharacters: z.boolean(),
+  // SPEC: 能否使用不点名角色的 AI 创作辅助（模板页等）：全局持有 content.official.write，或可全局建角色。
+  // INTENT: permissions 不带范围；仅凭角色包拿到的 content.official.write 在这里会被服务端拒绝。
+  canAssistCharacterDrafts: z.boolean().default(false),
   devLogin: z.object({
     enabled: z.boolean(),
     accounts: z.array(z.object({

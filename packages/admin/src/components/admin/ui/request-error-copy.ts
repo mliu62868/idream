@@ -142,7 +142,7 @@ const CANDIDATE_RELEASE_PENDING: Copy = {
 
 const VISUAL_IDENTITY_LOCKED: Copy = {
   headline: "The look is locked to the current portrait.",
-  nextStep: "Change the look from Visual identity instead of editing the appearance text. Nothing was written.",
+  nextStep: "Change the look in Appearance & identity instead of editing the appearance text. Nothing was written.",
 };
 
 const SUPPORT_CASE_SUPERSEDED: Copy = {

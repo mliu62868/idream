@@ -492,6 +492,20 @@ export const characterVisualWorkspaceSchema = z
       })
       .strict()
       .optional(),
+    // SPEC: 图片手动生成提交前的单价，按 profileKey 给出；每张都是独立的单图 Run，
+    //       合计 = 单价 × 张数，与 Run 接纳时记账的规则同源（Main creativeRunCostQuote）。
+    // INTENT: 只列能算出价格的 profile；缺席即「拿不到预估」，界面不显示，不编造数字。
+    imageGenerationEstimates: z
+      .array(
+        z
+          .object({
+            profileKey: adminIdSchema,
+            perItemCostDreamcoins: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .readonly()
+      .optional(),
     activeReferenceSet: characterVisualReferenceSetSchema.nullable(),
     looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
     routeQualifications: z
@@ -830,6 +844,16 @@ export const characterWorkspaceDetailSchema = z
     serving: characterServingSchema.nullable(),
     activeCommand: adminCommandStatusSchema.nullable(),
     releases: z.array(characterWorkspaceReleaseSchema).readonly(),
+    // SPEC: 上次发布被自动撤回（事件标记为自动）、且当前草稿仍是那份内容时的失败码与阻塞项；否则 null。
+    lastFailedPublish: z
+      .object({
+        releaseId: adminIdSchema,
+        failureCode: z.string().trim().min(1),
+        blockers: z.array(z.string().trim().min(1)).readonly(),
+        failedAt: adminIsoDateTimeSchema,
+      })
+      .strict()
+      .nullable(),
     preview: z
       .object({
         live: characterPreviewSnapshotSchema.nullable(),
