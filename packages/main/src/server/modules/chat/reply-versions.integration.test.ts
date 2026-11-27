@@ -37,7 +37,7 @@ async function fixture(options: { memory?: boolean } = {}) {
     if (!result.snapshot) throw new Error("Fixture Turn was not admitted");
     return result.snapshot;
   };
-  return { userId, sessionId: session.id, send };
+  return { userId, characterId: character.id, sessionId: session.id, send };
 }
 
 function sent(snapshot: ChatExecutionSnapshot, content: string): ChatTerminalCommit {
@@ -91,6 +91,11 @@ describe("reply versions", () => {
     const turn = await prisma.chatTurn.findUniqueOrThrow({ where: { id: first.turnId } });
     expect(turn).toMatchObject({ assistantStatus: "sent", sceneVersion: first.sceneVersion + 1 });
     expect(await prisma.chatTurnUsageFact.count({ where: { turnId: first.turnId } })).toBe(factsBefore);
+    // Metrics count the adopted reply, not the regenerated one the user rejected.
+    const correction = await prisma.analyticsEvent.findUnique({ where: { sourceService_sourceEventId: {
+      sourceService: "main", sourceEventId: `chat_exchange_correction:${first.turnId}:selected:${selected.attempt}`,
+    } }, select: { props: true } });
+    expect(correction?.props).toMatchObject({ correctionType: "selected", selectedAssistantMessageId: first.assistantMessageId });
   });
 
   it("rejects a selection made against a stale attempt", async () => {
@@ -136,17 +141,28 @@ describe("reply versions", () => {
     expect(await prisma.chatTurnAlternative.count({ where: { turnId: first.turnId } })).toBe(0);
   });
 
-  it("schedules a memory rebuild when the outgoing reply may already be in memory", async () => {
+  it("switches a memory-enabled reply while its rebuild is pending by widening that rebuild", async () => {
     const f = await fixture();
     const first = await f.send();
     await commitChatTerminal(sent(first, "Version one."));
     // The memory-enabled first reply is projectable, so regenerate rebuilds.
     const second = await regenerateChatTurn(f.userId, first.assistantMessageId);
+    expect(second.snapshot?.memoryEnabled).toBe(false);
     await commitChatTerminal(sent(second.snapshot!, "Version two."));
     const reply = await versionsOf(f.userId, f.sessionId, first.assistantMessageId);
-    // A rebuild is still pending, so swapping a projectable reply waits for it.
-    await expect(selectChatReplyVersion(f.userId, first.assistantMessageId, {
+    // No 409 while the first rebuild is still pending.
+    await selectChatReplyVersion(f.userId, first.assistantMessageId, {
       ordinal: reply.replyVersions![0]!.ordinal, expectedAttempt: reply.attempt,
-    })).rejects.toMatchObject({ details: expect.objectContaining({ reason: "memory_updating" }) });
+    });
+    expect((await versionsOf(f.userId, f.sessionId, first.assistantMessageId)).content).toBe("Version one.");
+    const rebuilds = await prisma.mainOutboxEvent.findMany({
+      where: { aggregateId: `${f.userId}:${f.characterId}`,
+        eventType: "chat.companion_memory.rebuild_requested.v1", status: "pending" },
+      select: { payload: true },
+    });
+    // The unclaimed rebuild absorbed the second purge fence instead of queueing another.
+    expect(rebuilds).toHaveLength(1);
+    const payload = (rebuilds[0]!.payload as { payload: { purgeRunAttempts: Array<{ turnId: string; throughAttempt: number }> } }).payload;
+    expect(payload.purgeRunAttempts).toEqual([{ turnId: first.turnId, throughAttempt: reply.attempt }]);
   });
 });

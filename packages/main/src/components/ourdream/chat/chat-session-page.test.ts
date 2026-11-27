@@ -3,6 +3,7 @@ import type { RuntimeChatMessage as ChatMessage } from "@/lib/public-api-contrac
 import {
   chatSessionPageFromPayload,
   COMPLETE_CHAT_SESSION_PAGE,
+  effectiveChatSessionPage,
   mergeChatSessionSnapshot,
   parseChatSessionPage,
   prependEarlierMessages,
@@ -60,5 +61,21 @@ describe("chat reconciliation poll", () => {
     expect(chatReconcilePollDelay({ streamHealthy: false, failureCount: 2 })).toBe(6_000);
     expect(chatReconcilePollDelay({ streamHealthy: true, failureCount: 1 })).toBe(3_000);
     expect(chatReconcilePollDelay({ streamHealthy: false, failureCount: 9 })).toBe(12_000);
+  });
+});
+
+describe("effectiveChatSessionPage", () => {
+  const latest = { hasEarlier: true, earliestTurnId: "turn-60" };
+  const older = { hasEarlier: true, earliestTurnId: "turn-10" };
+  it("continues from the older page while its Turn is still shown", () => {
+    expect(effectiveChatSessionPage(latest, older, [{ turnId: "turn-10" }, { turnId: "turn-60" }])).toBe(older);
+  });
+  it("falls back to the latest page when the merge dropped the older messages", () => {
+    // A latest page with no overlap replaced the transcript; the stale cursor would skip turns 11-59.
+    expect(effectiveChatSessionPage(latest, older, [{ turnId: "turn-60" }, { turnId: "turn-61" }])).toBe(latest);
+  });
+  it("uses the complete latest page when nothing is earlier", () => {
+    const complete = { hasEarlier: false, earliestTurnId: "turn-1" };
+    expect(effectiveChatSessionPage(complete, older, [{ turnId: "turn-10" }])).toBe(complete);
   });
 });

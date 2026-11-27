@@ -25,6 +25,7 @@ export function MessageActions({
   onRegenerate,
   onPlay,
   deleteConfirm,
+  onCancelDelete,
 }: Readonly<{
   isUser: boolean;
   pending: boolean;
@@ -37,6 +38,8 @@ export function MessageActions({
   onRegenerate?: () => void;
   onPlay?: () => void;
   deleteConfirm?: boolean;
+  /** Disarms an armed delete; collapsing the panel backs out of it. */
+  onCancelDelete?: () => void;
 }>) {
   const [moreOpen, setMoreOpen] = useState(false);
   const panelId = useId();
@@ -51,6 +54,10 @@ export function MessageActions({
     : tone;
   const iconButton = `grid h-10 w-10 md:h-7 md:w-7 place-items-center rounded-full ${tone} disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#ff7ac8]`;
   const pinned = prominent || expanded || voiceActive || voiceState === "loading";
+  const collapse = () => {
+    setMoreOpen(false);
+    if (deleteConfirm) onCancelDelete?.();
+  };
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -69,9 +76,9 @@ export function MessageActions({
       className={`mt-2 flex flex-wrap items-center justify-end gap-1 transition-opacity focus-within:opacity-100 group-hover:opacity-100 ${pinned ? "opacity-100" : "opacity-80 [@media(hover:hover)]:opacity-0"}`}
       data-testid="chat-message-actions"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || !moreOpen) return;
+        if (event.key !== "Escape" || !expanded) return;
         event.stopPropagation();
-        setMoreOpen(false);
+        collapse();
         toggleRef.current?.focus();
       }}
     >
@@ -152,7 +159,7 @@ export function MessageActions({
         aria-label={expanded ? "Fewer actions" : "More actions"}
         className={iconButton}
         data-testid="chat-message-more"
-        onClick={() => setMoreOpen((open) => !(open || Boolean(deleteConfirm)))}
+        onClick={() => (expanded ? collapse() : setMoreOpen(true))}
         ref={toggleRef}
         title={expanded ? "Fewer actions" : "More actions"}
         type="button"

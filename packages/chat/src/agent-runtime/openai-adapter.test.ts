@@ -1,3 +1,4 @@
+import { aggregateModelRequestUsage } from "./model-request-evidence";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -1414,15 +1415,16 @@ describe("transient provider retry", () => {
   function observed(fetchImpl: typeof fetch, firstTokenMs = 1_000) {
     const requests: CompanionModelRequestEvidence[] = [];
     const receipts: Array<unknown> = [];
+    const receiptEvidence: CompanionModelRequestEvidence[] = [];
     const adapter = new OpenAiCompatibleAdapter({
       profile: { tier: "test", adapter: "openai-compatible-v1", provider: "openai", baseUrl: "https://provider.example/v1",
         model: "deepseek/test", supportsTools: true, maxOutputTokens: 16, timeout: { firstTokenMs, idleMs: 1_000 },
         sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 } },
       apiKey: "provider-secret", fetch: fetchImpl,
       observeRequest: evidence => { requests.push(evidence); },
-      observeUsage: usage => { receipts.push(usage ?? null); },
+      observeUsage: (usage, evidence) => { receipts.push(usage ?? null); receiptEvidence.push({ ...evidence, usage: usage ?? null }); },
     });
-    return { adapter, requests, receipts };
+    return { adapter, requests, receipts, receiptEvidence };
   }
   async function collect(adapter: OpenAiCompatibleAdapter, signal?: AbortSignal) {
     const events: AssistantMessageEvent[] = [];
@@ -1462,6 +1464,22 @@ describe("transient provider retry", () => {
     expect(terminal(events).stopReason).toBe("stop");
     expect(requests).toHaveLength(2);
     expect(receipts).toEqual([null, { inputTokens: 7, outputTokens: 2 }]);
+  });
+
+  it("marks only the superseded request as retried so reply usage keeps the answer's receipt", async () => {
+    let calls = 0;
+    const { adapter, receiptEvidence } = observed((async () => (++calls === 1 ? new Response("busy", { status: 503 }) : ok())) as unknown as typeof fetch);
+    await collect(adapter);
+    expect(receiptEvidence.map(evidence => evidence.retried ?? false)).toEqual([true, false]);
+    expect(aggregateModelRequestUsage(receiptEvidence)).toEqual({ promptTokens: 7, completionTokens: 2, reasoningTokens: null });
+  });
+
+  it("does not mark the final failed request as retried", async () => {
+    const { adapter, receiptEvidence } = observed((async () => new Response("busy", { status: 503 })) as typeof fetch);
+    await expect(collect(adapter)).rejects.toMatchObject({ status: 503 });
+    expect(receiptEvidence.map(evidence => evidence.retried ?? false)).toEqual([true, false]);
+    // The unretried failure keeps reply usage unknown.
+    expect(aggregateModelRequestUsage(receiptEvidence)).toBeNull();
   });
 
   it("retries at most once", async () => {

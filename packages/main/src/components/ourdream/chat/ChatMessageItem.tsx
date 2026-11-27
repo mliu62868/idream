@@ -27,6 +27,7 @@ export type ChatMessageHandlers = {
   readonly changeEdit: (value: string) => void;
   readonly report: (messageId: string) => void;
   readonly remove: (messageId: string) => void;
+  readonly cancelDelete: () => void;
   readonly regenerate: (messageId: string) => void;
   /** Make an earlier version of the latest reply current (observed attempt fences it). */
   readonly selectVersion: (messageId: string, ordinal: number, attempt: number) => void;
@@ -243,6 +244,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
           onReport={() => handlers.report(message.id)}
           onDelete={canDelete ? () => handlers.remove(message.id) : undefined}
           deleteConfirm={canDelete && deleteConfirm}
+          onCancelDelete={handlers.cancelDelete}
           onRegenerate={canRegenerate ? () => handlers.regenerate(message.id) : undefined}
           onPlay={canPlayMessage ? () => handlers.play(message.id, message.content) : undefined}
         />

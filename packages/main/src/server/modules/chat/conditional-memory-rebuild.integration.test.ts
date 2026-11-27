@@ -3,7 +3,6 @@ import { CHAT_SEND_PROTOCOL_VERSION, MAIN_TO_CHAT_EVENTS } from "@idream/shared/
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { AppError } from "@/server/lib/errors";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { companionRelationshipAggregateId } from "./companion-memory-authority";
 import { beginChatTurn, createChatSession, deleteChatMessage, editChatTurn, regenerateChatTurn } from "./turn-ledger";
@@ -97,11 +96,14 @@ describe("conditional relationship rebuild", () => {
     }]);
     await expect(purgeIntents(turn.turnId)).resolves.toEqual([]);
 
-    // Another projectable revision must wait for that rebuild.
+    // Another projectable revision is not refused: it joins the unclaimed rebuild.
     await finish(turn.turnId, "sent");
-    const refused = await regenerateChatTurn(f.userId, turn.assistantId).catch((error: unknown) => error);
-    expect(refused).toBeInstanceOf(AppError);
-    expect((refused as AppError).status).toBe(409);
+    const joined = await regenerateChatTurn(f.userId, turn.assistantId);
+    expect(joined.snapshot.memoryEnabled).toBe(false);
+    await expect(memoryEvents(f.aggregateId)).resolves.toMatchObject([{
+      status: "pending",
+      payload: { payload: { purgeRunAttempts: [{ turnId: turn.turnId, throughAttempt: 2 }] } },
+    }]);
 
     // A failed attempt is not refused, but runs isolated while the rebuild is pending.
     await finish(turn.turnId, "failed");

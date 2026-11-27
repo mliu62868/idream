@@ -12,6 +12,7 @@ import { chatStreamLatestReplyFailed, type useChatReplyDelivery } from "../chat-
 import {
   CHAT_EARLIER_PAGE_LIMIT,
   COMPLETE_CHAT_SESSION_PAGE,
+  effectiveChatSessionPage,
   chatSessionPage,
   chatSessionPageFromPayload,
   type ChatSessionPage,
@@ -50,6 +51,8 @@ type SessionSyncOptions = {
   readonly suspendReceipts: (clear: boolean) => void;
   readonly resumeReceipts: (ownerScope: string) => void;
   readonly setReceiptOwnerScope: (ownerScope: string | null) => void;
+  /** The transcript as currently shown; validates the older-page cursor. */
+  readonly messages: readonly ChatMessage[];
   /** Earlier messages arrived; the caller keeps the reader's place. */
   readonly onEarlierMessages: (messages: readonly ChatMessage[]) => void;
   readonly reconciliation: {
@@ -77,8 +80,9 @@ export function useChatSessionSync(options: SessionSyncOptions) {
   const [earlierState, setEarlierState] = useState<"idle" | "loading" | "error">("idle");
   const conversationEpochRef = useRef(0);
   const pollWakeRef = useRef<(() => void) | null>(null);
-  // A complete latest page (nothing earlier) supersedes any older cursor.
-  const page = latestPage.hasEarlier ? olderPage ?? latestPage : latestPage;
+  // A latest page that no longer overlaps what was loaded drops those earlier
+  // messages; "load earlier" then continues from the latest page, not a stale cursor.
+  const page = effectiveChatSessionPage(latestPage, olderPage, options.messages);
 
   // SPEC: Reads the latest page unless a cursor is given. Page metadata is
   //       carried on the returned session so delivery can merge partial pages.

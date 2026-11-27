@@ -87,6 +87,11 @@ const RATE_LIMIT_RETRY_DELAY_MS = 1_000;
 const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 /** A provider failure that a second identical physical request may cure. */
+/** The single retry predicate shared by the dispatcher's receipt and the retry loop. */
+function retryFollows(error: unknown, progress: { started: boolean }, signal: AbortSignal | undefined, retryAllowed: boolean): error is ProviderError {
+  return retryAllowed && !progress.started && !signal?.aborted && isTransientProviderFailure(error);
+}
+
 function isTransientProviderFailure(error: unknown): error is ProviderError {
   if (!(error instanceof ProviderError)) return false;
   if (error.code === "TRANSPORT" || error.code === "MODEL_FIRST_TOKEN_TIMEOUT") return true;
@@ -386,15 +391,15 @@ export class OpenAiCompatibleAdapter {
     const request = this.prepareRequest(messages, options);
     const progress = { started: false };
     try {
-      await this.dispatch(request, options, stream, output, progress);
+      await this.dispatch(request, options, stream, output, progress, true);
     } catch (error) {
-      if (progress.started || options.signal?.aborted || !isTransientProviderFailure(error)) throw error;
+      if (!retryFollows(error, progress, options.signal, true)) throw error;
       // The failed request published nothing to Pi; start the retry from the
       // same pristine message so no receipt of the failed attempt leaks into it.
       this.receipts.delete(output);
       output.usage = this.emptyMessage().usage;
       await abortableDelay(error.status === 429 ? RATE_LIMIT_RETRY_DELAY_MS : TRANSIENT_RETRY_DELAY_MS, options.signal);
-      await this.dispatch(request, options, stream, output, { started: false });
+      await this.dispatch(request, options, stream, output, { started: false }, false);
     }
   }
 
@@ -448,8 +453,9 @@ export class OpenAiCompatibleAdapter {
   /** Exactly one physical provider request, journaled before and receipted after. */
   private async dispatch(request: { serializedBody: string; requestEvidence: CompanionModelRequestEvidence },
     options: InvocationOptions, stream: AssistantMessageEventStream, output: AssistantMessage,
-    progress: { started: boolean }): Promise<void> {
+    progress: { started: boolean }, retryAllowed: boolean): Promise<void> {
     const { profile, observeRequest, observeUsage } = this.config;
+    let failure: unknown;
     const { serializedBody, requestEvidence } = request;
     const timeout = linkedSignal(options.signal);
     let firstToken = true;
@@ -604,6 +610,9 @@ export class OpenAiCompatibleAdapter {
         }
       }
       output.stopReason = finish;
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
       clearTimeout(firstTokenTimer);
       timeout.clear();
@@ -613,7 +622,11 @@ export class OpenAiCompatibleAdapter {
           reasoning: usage.reasoningTokens, totalTokens: usage.inputTokens + usage.outputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
       }
-      if (requestStarted) observeUsage?.(usage, requestEvidence);
+      // A request superseded by the in-process retry produced nothing for the
+      // reply. Its receipt stays (usage unknown stays null) but is marked so the
+      // reply usage counts only the request chain that produced the answer.
+      if (requestStarted) observeUsage?.(usage, retryFollows(failure, progress, options.signal, retryAllowed)
+        ? { ...requestEvidence, retried: true } : requestEvidence);
     }
   }
 }

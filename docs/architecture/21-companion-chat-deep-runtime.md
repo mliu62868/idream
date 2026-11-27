@@ -21,7 +21,7 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 - Chat 首次接纳时固定并持久化 deadline，重复接纳与恢复重放同一时间；接纳回执绑定 Turn/attempt 并将该截止时间交给 Main。Main 在实际截止时间加终态提交宽限之后回收，不从另一个进程的配置或普通行更新时间猜测新运行的期限。没有该字段的历史 generating 行沿用旧回收政策。
 - 待接纳（pending）attempt 受接纳 TTL 约束，默认 180 秒。到期仍未被 Chat 接纳时，Main 将其提交为 failed `admission_expired`，void 该 Turn 的额度 fact，并写入 durable cancel intent，迟到的接纳不能再执行它。
 - Main 主动消息的无时区时间字段按 UTC 比较和推进，不继承数据库会话时区。
-- 回复版本：最新 Turn 的纯文字回复被 regenerate 取代时，保留为可选版本（`chat_turn_alternatives`，含当前回复至多 10 个，按生成顺序编号）。选回某个版本是 Main 对该 Turn 的修订：attempt 递增、不调用 Chat、不扣额度、不重放工具效果；记忆按第 6.3 节的可投影规则退休被换下的回复，未重建时为新当前回复调度普通投影。编辑用户消息或开始更新的 Turn 时版本作废；带媒体附件的回复不成为版本，也不能被换下，因为其附件、计费与交付绑定在具体 attempt 上。未被选中的版本不进入长期记忆。
+- 回复版本：最新 Turn 的纯文字回复被 regenerate 取代时，保留为可选版本（`chat_turn_alternatives`，含当前回复至多 10 个，按生成顺序编号）。选回某个版本是 Main 对该 Turn 的修订：attempt 递增、不调用 Chat、不扣额度、不重放工具效果；记忆按第 6.3 节的可投影规则退休被换下的回复，未重建时为新当前回复调度普通投影。编辑用户消息或开始更新的 Turn 时版本作废；带媒体附件的回复不成为版本，也不能被换下，因为其附件、计费与交付绑定在具体 attempt 上。未被选中的版本不进入长期记忆。选回版本写入 `chat.exchange.corrected.v2` 的 `selected` 修正，指标计入被采用的回复。
 
 ### 2. 交付与 SSE
 
@@ -121,14 +121,14 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 #### 6.2 prepare / promote 与栅栏
 
 - Chat 在独立候选 workspace 中幂等 prepare，再以单调 authority version 原子 promote。prepare/promote 不持有 relationship-wide Agent 执行锁，也不取消已经运行的 Turn；普通投影延迟不阻塞新 Turn。
-- promote 的栅栏是关系级 `companion_memory_authorities` 行的 `FOR UPDATE` 加 authority version 校验；破坏性变更（含 clear memory）同样写该行，账号硬删除删除该行，因此仍然互斥。version 已被更新时，普通投影放弃 promote；重建仅在被撤销（clear、删号）时放弃，因为之后以 canonical 为种子的投影带不上重建的删除。memory lane 按 aggregate 分组有界并发（至多 4），同一 aggregate 内严格串行。持有 users 行锁时不发起任何远程调用（包括 prepare/promote/purge HTTP）。
+- promote 的栅栏是关系级 `companion_memory_authorities` 行的 `FOR UPDATE` 加 authority version 校验；破坏性变更（含 clear memory）同样写该行，账号硬删除删除该行，因此仍然互斥。version 已被更新时，普通投影放弃 promote；重建仅在被撤销（clear、删号）时放弃，因为之后以 canonical 为种子的投影带不上重建的删除。memory lane 按 aggregate 分组有界并发（至多 4），同一 aggregate 内严格串行。已知限制：promote 仍跨 promote HTTP 持有该关系行；promote 期间同一关系若有终态提交需要新的投影 authority，会在持有 users 行锁时等待该行。影响面已从"每次 promote 阻塞该用户全部操作"收窄到"同关系并发终态"，彻底消除需要 Chat 侧带版本栅栏的两阶段 promote。持有 users 行锁时不发起任何远程调用（包括 prepare/promote/purge HTTP）。
 - clear/destructive rebuild 必须撤销 pending 和 processing 普通投影；后者可能已经读出旧历史，最终 promote 须在上述关系级栅栏内确认事件仍有效。
 - canonical 指针的原子切换是本地发布点。切换后隔离旧版本失败仍向 Main 报错、保留重建待完成状态，但不能回滚到可能已被隔离的旧路径。精确重放已经发布的版本也必须完成剩余旧版本与候选的隔离后才 ACK。
 - 用户完整删除由 Chat 持久 tombstone 阻止旧 prepare/promote 复活。账号删除的同一 sourceEventId 串行构造持久回执；本地 purgedAt、完成事件 ID 与请求 hash 构成不可变候选，并发投递和重试都重放同一完成信封。
 
 #### 6.3 修订与破坏性重建
 
-- regenerate、edit 或删除只在被取代的 attempt 可能已被投影时（assistant 已 sent 且该 Turn `memoryEnabled`）触发破坏性关系记忆重建。此时由 Main 把受影响的新 Agent attempt 固定为 private execution，重建完成前后续 regenerate/edit/删除返回 409，直到重建切换完成。
+- regenerate、edit、删除单条消息或会话、选回回复版本，只在被取代的 attempt 可能已被投影时（assistant 已 sent 且该 Turn `memoryEnabled`）触发破坏性关系记忆重建。重建挂起期间不拒绝修订：新的 purge 栅栏并入尚未被领取的重建事件（守护更新与领取互斥），已被领取的重建可能已导出，不再扩大，新事件排在其后（同一 aggregate 串行投递）。挂起期间该关系的新 Agent attempt 固定为 private execution，直到所有重建切换完成。
 - 被取代的 attempt 不可能已被投影时（未 sent，或未开启记忆），只清除旧 attempt 的 AgentRun 产物，不重建关系记忆，新 attempt 的记忆保持开启。
 
 #### 6.4 igrep 来源格式与 staging
@@ -217,7 +217,7 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 
 ### 10. 可观测性与资格
 
-- 本地 AgentRun event 文件只记录 content-free lifecycle/tool/failure 事实。每次物理模型请求（包括工具后的回复、被拒绝的摘要、媒体提取与正文、瞬时重试）独立进入 usage 和 modelRequests 证据；物理用量回执以纯数字保留在 AgentRun journal，失败也不丢弃；不能用 Pi 默认的数字 usage 把未知上游回执当成零。上游不报告 reasoning 子计数时保持未知，已报告的 completion 总数不重复加算推理。实际 provider 归属与每次物理请求用量必须可核验。
+- 本地 AgentRun event 文件只记录 content-free lifecycle/tool/failure 事实。每次物理模型请求（包括工具后的回复、被拒绝的摘要、媒体提取与正文、瞬时重试）独立进入 usage 和 modelRequests 证据；物理用量回执以纯数字保留在 AgentRun journal，失败也不丢弃；不能用 Pi 默认的数字 usage 把未知上游回执当成零。上游不报告 reasoning 子计数时保持未知，已报告的 completion 总数不重复加算推理。实际 provider 归属与每次物理请求用量必须可核验。 被 adapter 进程内重试取代、且未产生输出的物理请求保留自己的回执（未知仍为 null），并标记 `retried: true`；回复用量只汇总产出该回复的请求链。
 - 媒体阶段失败日志记录所处阶段、已知的模型停止原因、已收到的 token 回执和回合剩余时间。
 - Chat admission health 每个短 TTL 窗口重新检查文件、Redis、Pi/igrep pin 与唯一 Chat 模型 route；准入健康和完整认证共用已安装包的版本核验。完整 provider 请求、profile、工具、记忆重建和隔离证明属于显式运营认证。
 - setup/check 核验精确包版本、公共 MemoryStorage API、CLI surface，以及无模型的真实 CLI 搜索、JSONL ID、UTF-8 分页及版本变化拒绝；它不能替代 full readiness。full readiness 另验真实 provider 与记忆生命周期；其本地检索用保留对话中的事实核验，不要求 system-only 事实出现在检索语料中。
@@ -299,5 +299,6 @@ igrep 升至 `0.1.169`，composition 73 收紧检索命中的阶段归属、预�
 - 文档修正：Scene 投影器未接入（第 9 节）。
 - 回复版本（第 1 节），按用户选择实现完整版：可切换并选定为当前回复，限纯文字回复。
 - 检索优先级（第 7.4 节）。证据：companion 质量评测（42 例，Inkling-2-Mini，单样本）中 7 例在事实已可见时仍调用检索，额外 1–3 轮请求，其中一例检索为空后否认 Soul 事实；加入指引后物理请求 57 → 52、多轮请求用例 11 → 8，通过数不变（39/42）。关闭文本线索的对照组多失败一个保存偏好的长度用例，线索暂保留，删除须以多样本评测为据。
-- 删除无存量依赖的 legacy 分支（开发库计数为 0）：无 deadline 的 generating watchdog、无 attempt 的编辑回执重放、attachmentAttempt 的 effect 回退读取；legacy 附件 id（81 行）、缺 effect.name 的图片（9 行）、旧 send 协议（598 个 Turn）仍有存量，保留。
+- 删除 legacy 读取分支：无 deadline 的 generating watchdog、无 attempt 的编辑回执重放、attachmentAttempt 的 effect 回退读取。开发库计数为 0，另由 migration `20261126030000_backfill_legacy_chat_attempt_shapes` 把任何环境中残存的旧形状迁到新形状（generating 行的 deadline 回填为 updatedAt + 5 分钟，与旧回收时刻一致），删除不依赖单库计数；legacy 附件 id（81 行）、缺 effect.name 的图片（9 行）、旧 send 协议（598 个 Turn）仍有存量，保留。
+- 同日复盘（独立代码审查）修正：重建挂起不再拒绝修订（原 409 使选回版本与连续重新生成在重建窗口内不可用）；重试取代的请求不再使回复用量为 null；快照仅确定性错误计入有界重试，瞬时数据库错误走普通退避；选回版本写 `selected` 指标修正；分页在最新页与已加载内容无重叠时改从最新页游标继续，避免历史空洞。characterStats 展示计数改为提交后尽力递增，失败会少计（有日志），`statsCountedAt` 仍是权威事实。
 - 新增 `packages/chat/eval/companion` 质量评测（`bun run --filter @idream/chat eval:companion`）：用例走生产 `prepareCompanionTurn` → `CompanionEngine` 路径，确定性检查加 judge 标签、代码判定，结果绑定 source revision。

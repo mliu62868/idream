@@ -232,8 +232,8 @@ async function resolveScopeIdentity(
 
 /**
  * 附件的 attempt 身份写在 metadata 根上（唯一创建入口 createToolEffectAttachment
- * 与重绑都写根字段）。曾经只写在 effect 下的历史形状已无存量（2026-11-26 dev 库
- * 计数为 0），不再回退读取。无有效身份的附件属于 attempt 1。展示、工具重放、
+ * 与重绑都写根字段）。曾经只写在 effect 下的历史形状由 migration
+ * 20261126030000_backfill_legacy_chat_attempt_shapes 迁到根字段，不再回退读取。无有效身份的附件属于 attempt 1。展示、工具重放、
  * 取锁与生成引用共用此判定。
  */
 export function attachmentAttempt(metadata: Prisma.JsonValue): number {

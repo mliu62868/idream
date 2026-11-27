@@ -227,6 +227,8 @@ export const companionModelRequestEvidenceSchema = z.object({
   provider: nonEmptyString.optional(),
   model: nonEmptyString.optional(),
   usage: companionModelTokenUsage.nullable().optional(),
+  /** Superseded by the adapter's in-process retry before producing any output. */
+  retried: z.literal(true).optional(),
 }).strict();
 export type CompanionModelRequestEvidence = z.infer<typeof companionModelRequestEvidenceSchema>;
 

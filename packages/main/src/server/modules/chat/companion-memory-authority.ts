@@ -54,16 +54,6 @@ export async function hasPendingCompanionMemoryMutation(
   return Boolean(pending);
 }
 
-export async function assertNoPendingCompanionMemoryRebuild(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  characterId: string,
-): Promise<void> {
-  if (await hasPendingCompanionMemoryMutation(tx, userId, characterId)) {
-    throw Errors.conflict("Still updating this Character's memory — try again in a few seconds", { reason: "memory_updating" });
-  }
-}
-
 /**
  * SPEC: whether a Turn's current attempt can already be part of canonical
  * memory. Mirrors the export filter in {@link memorySourceMessages}: only a
@@ -104,7 +94,9 @@ export async function retireCompanionMemoryAttempt(
 ): Promise<{ rebuilt: boolean; memoryIsolated: boolean }> {
   const { userId, characterId, turn } = input;
   if (companionMemoryMayContain(turn)) {
-    await assertNoPendingCompanionMemoryRebuild(tx, userId, characterId);
+    // A rebuild may already be pending. Revisions are not refused for it: the
+    // new purge fence joins the unclaimed rebuild or queues behind the claimed
+    // one, and the next attempt runs memory-isolated until both are promoted.
     await scheduleCompanionMemoryRebuild(tx, {
       userId,
       characterId,
@@ -197,9 +189,43 @@ export async function scheduleCompanionMemoryRebuild(
   // projections. The promotion fence takes this same row, so a promote either
   // finishes before this transaction or observes the revocation after it.
   const authority = await bumpCompanionMemoryAuthority(tx, aggregateId);
-  // INVARIANT: every destructive mutation carries its own exact purge fence.
-  // A pending rebuild may already be processing and cannot be safely widened.
   await supersedeMemoryProjections(tx, aggregateId, "destructive_memory_rebuild");
+  const purgeTurnIds = [...new Set(input.purgeTurnIds ?? [])];
+  const purgeRunAttempts = dedupeAttemptFences(input.purgeRunAttempts ?? []);
+  // INVARIANT: a claimed rebuild may already have exported, so it is never
+  // widened; a new event queues behind it (same aggregate, serial delivery).
+  // An unclaimed one has exported nothing yet: widen its purge fence instead of
+  // queueing a second whole-relationship rebuild. The guarded update loses to a
+  // concurrent claim exactly like projection coalescing does.
+  const unclaimed = await tx.mainOutboxEvent.findFirst({
+    where: {
+      eventType: MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
+      aggregateType: "chat_relationship",
+      aggregateId,
+      status: "pending",
+      attempts: 0,
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, payload: true },
+  });
+  if (unclaimed) {
+    const prior = durableEventEnvelopeSchema.parse(unclaimed.payload);
+    const priorPayload = memoryRebuildPayload(prior);
+    const widened = durableEventEnvelopeSchema.parse({
+      ...prior,
+      payload: {
+        ...(prior.payload as Record<string, unknown>),
+        authorityVersion: authority.version.toString(),
+        purgeTurnIds: [...new Set([...priorPayload.purgeTurnIds, ...purgeTurnIds])],
+        purgeRunAttempts: dedupeAttemptFences([...priorPayload.purgeRunAttempts, ...purgeRunAttempts]),
+      },
+    });
+    const coalesced = await tx.mainOutboxEvent.updateMany({
+      where: { id: unclaimed.id, status: "pending", attempts: 0 },
+      data: { payload: toInputJson(widened) },
+    });
+    if (coalesced.count === 1) return unclaimed.id;
+  }
   const eventId = randomUUID();
   const envelope = durableEventEnvelopeSchema.parse({
     sourceService: "main",
@@ -215,8 +241,8 @@ export async function scheduleCompanionMemoryRebuild(
       characterId: input.characterId,
       claimToken: randomUUID(),
       authorityVersion: authority.version.toString(),
-      purgeTurnIds: [...new Set(input.purgeTurnIds ?? [])],
-      purgeRunAttempts: dedupeAttemptFences(input.purgeRunAttempts ?? []),
+      purgeTurnIds,
+      purgeRunAttempts,
     },
   });
   await tx.mainOutboxEvent.create({

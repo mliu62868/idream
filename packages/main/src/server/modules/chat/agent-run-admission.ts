@@ -18,6 +18,7 @@ import {
   regenerateChatTurn,
   type ChatTurnEditOptions,
 } from "./turn-ledger";
+import { isPermanentSnapshotFailure } from "./execution-snapshot";
 import { ADMISSION_EXPIRED_FAILURE_CODE, expirePendingChatTurn, type PendingAdmissionExpiry } from "./turn-terminal";
 import { loadChatAuthoritySnapshot, type ChatEntitlements } from "./chat-authority-snapshot";
 import {
@@ -483,8 +484,9 @@ export async function reclaimStalledChatAgentRuns(
     where: {
       assistantStatus: "generating",
       terminalAt: null,
-      // Every admission pins Chat's deadline (the legacy null-deadline watchdog
-      // had no remaining rows and was removed).
+      // Every admission pins Chat's deadline (the ack schema requires it);
+      // legacy null-deadline rows were backfilled by migration
+      // 20261126030000_backfill_legacy_chat_attempt_shapes.
       executionDeadlineAt: { lt: cutoff.deadlineBefore },
     },
     orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
@@ -519,6 +521,16 @@ async function attemptPersistedChatAgentRunAdmission(
     snapshot = await executionSnapshot(turnId);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "invalid frozen execution snapshot";
+    if (!isPermanentSnapshotFailure(error)) {
+      // A lock timeout or connection reset says nothing about the snapshot.
+      // Back off without counting it; the pending TTL still bounds the Turn.
+      await prisma.chatTurn.updateMany({
+        where: { id: turnId, assistantStatus: "pending" },
+        data: { admissionNextRunAt: new Date(Date.now() + admissionBackoffMs(2)), admissionLastError: { message: reason, kind: "snapshot_unavailable" } },
+      }).catch(() => undefined);
+      logger.warn({ err: error, turnId }, "pending Chat Turn snapshot temporarily unavailable");
+      return { admitted: false, reason };
+    }
     // INVARIANT: one corrupt product snapshot cannot abort the rest of the due
     // admission batch, and cannot retry forever either: after a bounded number
     // of dispatcher passes it takes the same exit as an expired pending Turn.

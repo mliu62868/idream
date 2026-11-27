@@ -310,6 +310,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   const sync = useChatSessionSync({
     id,
     groupMode,
+    messages,
     sessionPath,
     viewer,
     ageGateAccepted,
@@ -857,6 +858,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     changeEdit: setEditingContent,
     report: reportMessage,
     remove: (messageId) => void deleteMessage(messageId),
+    cancelDelete: () => setDeleteConfirmMessageId(null),
     regenerate: (messageId) => void regenerate(messageId),
     selectVersion: (messageId, ordinal, attempt) => void selectReplyVersion(messageId, ordinal, attempt),
     play: (messageId, text) => void voice.play(messageId, text),

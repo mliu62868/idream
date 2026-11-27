@@ -2369,9 +2369,11 @@ describe("Chat embedded companion runtime", () => {
       const receipts = connection.events.filter(event => event.type === "model_request");
       expect(started).toHaveLength(2);
       expect(receipts.map(event => event.type === "model_request" && event.request.usage)).toEqual([null, expect.objectContaining({ inputTokens: 11, outputTokens: 4 })]);
-      // One unknown physical receipt keeps the Turn's aggregate usage unknown.
+      // The superseded request keeps its unknown receipt but is marked retried;
+      // reply usage counts the request that produced the answer.
       expect(connection.candidates[0]!.modelRequests).toHaveLength(2);
-      expect(connection.candidates[0]!.usage).toBeNull();
+      expect(connection.candidates[0]!.modelRequests?.map(request => request.retried ?? false)).toEqual([true, false]);
+      expect(connection.candidates[0]!.usage).toEqual({ promptTokens: 11, completionTokens: 4, reasoningTokens: 0 });
       expect(connection.events.filter(event => event.type === "text_reset")).toHaveLength(0);
     } finally { await runtime.shutdown(); }
   });

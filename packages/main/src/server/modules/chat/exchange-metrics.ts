@@ -113,8 +113,10 @@ export async function appendChatExchangeCompleted(
  *     correction older than the fact's attempt, so arrival order does not matter.
  *   - deleted / superseded (session delete): revision = the current attempt, so
  *     a late completion of that same attempt cannot revive it.
- *   - `selected` has no producer: a Turn has one reply, and regeneration
- *     already replaces it through a higher-attempt completion event.
+ *   - selected: a user adopts an earlier reply version (turn-alternatives);
+ *     revision = the new attempt, selectedAssistantMessageId = the reply.
+ *     Regeneration itself still replaces the reply through a higher-attempt
+ *     completion event.
  *   - only exchanges that ever produced a completion (user origin, a sent reply,
  *     a content version) are corrected. A Turn from the 2026-08-28 gap has no
  *     fact at all; the projector skips a Main correction for it.
@@ -132,8 +134,9 @@ export async function appendChatExchangeCorrected(
 type ExchangeCorrectionTurn = { id: string; origin: string; statsCountedAt: Date | null; characterContentVersionId: string | null };
 type ExchangeCorrection = {
   userId: string;
-  correctionType: "edited" | "deleted" | "superseded";
+  correctionType: "selected" | "edited" | "deleted" | "superseded";
   correctionRevision: number;
+  selectedAssistantMessageId?: string;
   sessionId?: string;
   messageIds?: string[];
 };

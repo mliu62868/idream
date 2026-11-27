@@ -8,7 +8,7 @@ import { appendCanonicalMetricEventsForUser } from "@/server/modules/admin-v2/me
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { publicReadableMediaAssetWhere } from "@/server/modules/ourdream/public-content-audience";
 import { collectionMediaViewUrl } from "@/server/modules/ourdream/public-read-model";
-import { assertNoPendingCompanionMemoryRebuild, scheduleCompanionMemoryRebuild } from "./companion-memory-authority";
+import { scheduleCompanionMemoryRebuild } from "./companion-memory-authority";
 import { lockChatScope } from "./turn-scope";
 import { ACTIVE_ASSISTANT_STATES, optionalText, requiredText } from "./turn-ledger-support";
 import { chatExchangeCorrectedEvent } from "./exchange-metrics";
@@ -174,7 +174,6 @@ export async function deleteGroupChatConversation(userId: string, groupId: strin
 async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: string, sessionId: string, groupId: string | null) {
     const { session } = await lockChatScope(tx, { userId, at: { session: sessionId }, allowDeletedSession: true });
     if (session.groupId !== groupId) throw Errors.conflict("Delete this conversation from its group chat", { reason: "group_conversation" });
-    await assertNoPendingCompanionMemoryRebuild(tx, userId, session.characterId);
     const active = await tx.chatTurn.findFirst({
       where: { sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
       select: { id: true },

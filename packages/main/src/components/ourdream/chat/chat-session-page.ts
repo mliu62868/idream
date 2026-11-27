@@ -53,6 +53,21 @@ export function mergeChatSessionSnapshot(
   return [...earlier, ...snapshot, ...local];
 }
 
+/**
+ * The page "load earlier" continues from. An older page's cursor stays valid
+ * only while its Turn is still shown; otherwise the latest page's cursor is.
+ */
+export function effectiveChatSessionPage(
+  latestPage: ChatSessionPage,
+  olderPage: ChatSessionPage | null,
+  shown: readonly Pick<ChatMessage, "turnId">[],
+): ChatSessionPage {
+  if (!latestPage.hasEarlier) return latestPage;
+  const olderStillShown = olderPage?.earliestTurnId != null
+    && shown.some((message) => message.turnId === olderPage.earliestTurnId);
+  return olderStillShown ? olderPage! : latestPage;
+}
+
 /** Older messages go above the current list; ids already present win. */
 export function prependEarlierMessages(
   current: readonly ChatMessage[],

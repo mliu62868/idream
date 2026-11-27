@@ -26,7 +26,7 @@ afterEach(async () => {
 const noop = () => {};
 function handlers(selectVersion: ChatMessageHandlers["selectVersion"]): ChatMessageHandlers {
   return {
-    beginEdit: noop, cancelEdit: noop, saveEdit: noop, changeEdit: noop, report: noop, remove: noop, regenerate: noop,
+    beginEdit: noop, cancelEdit: noop, saveEdit: noop, changeEdit: noop, report: noop, remove: noop, cancelDelete: noop, regenerate: noop,
     selectVersion, play: noop, confirmVoice: noop, dismissVoice: noop, retryAttachment: async () => {},
     refreshAttachments: async () => {}, addToIdentity: noop, identityFeedback: noop, moreLikeThis: noop, animate: noop,
     continueReply: noop,

@@ -3,11 +3,27 @@ import type { ChatExecutionSnapshot, ChatContextDirective, ChatExperiencePrefere
 import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
+import { ZodError } from "zod";
 import { userChatPersonaForTurn } from "./user-persona";
 import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
 import { deliveredChatMedia } from "./chat-media-history";
 import { fail, toJson } from "./turn-ledger-support";
+
+/** A snapshot that can never become executable (corrupt, missing Turn, invalid shape). */
+export class InvalidExecutionSnapshotError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "InvalidExecutionSnapshotError";
+  }
+}
+
+/** Deterministic snapshot failures; transient database errors are not among them. */
+export function isPermanentSnapshotFailure(error: unknown): boolean {
+  return error instanceof InvalidExecutionSnapshotError
+    || error instanceof ZodError
+    || (error instanceof AppError && error.status === 404);
+}
 
 export async function executionSnapshot(turnId: string): Promise<ChatExecutionSnapshot> {
   return prisma.$transaction(async (tx) => {
@@ -35,7 +51,7 @@ export async function frozenExecutionSnapshot(
   if (persisted) {
     const parsed = chatExecutionSnapshotSchema.safeParse(persisted);
     if (parsed.success) return parsed.data;
-    throw new Error("Chat Turn has an invalid frozen execution snapshot");
+    throw new InvalidExecutionSnapshotError("Chat Turn has an invalid frozen execution snapshot", { cause: parsed.error });
   }
   const recent = await tx.chatTurn.findMany({
     where: {

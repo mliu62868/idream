@@ -7,6 +7,9 @@ import { env } from "@/server/lib/env";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { attemptChatAgentRunAdmission, dispatchPendingChatAgentRuns, expireStalePendingChatTurns } from "./agent-run-admission";
 import { beginChatTurn, createChatSession, getChatSession, regenerateChatTurn } from "./turn-ledger";
+import { InvalidExecutionSnapshotError, isPermanentSnapshotFailure } from "./execution-snapshot";
+import { Errors } from "@/server/lib/errors";
+import { z } from "zod";
 
 const prefix = `zt-admission-expiry-${randomUUID()}-`;
 
@@ -140,5 +143,14 @@ describe("pending admission TTL", () => {
       terminalEvidence: { failureCode: "admission_expired", reason: "snapshot_invalid" },
     });
     await expect(cancelIntent(turnId)).resolves.not.toBeNull();
+  });
+
+  it("counts only deterministic snapshot failures toward the bounded retry", () => {
+    expect(isPermanentSnapshotFailure(new InvalidExecutionSnapshotError("corrupt"))).toBe(true);
+    expect(isPermanentSnapshotFailure(z.object({ a: z.string() }).safeParse({}).error)).toBe(true);
+    expect(isPermanentSnapshotFailure(Errors.notFound("Chat turn not found"))).toBe(true);
+    // Lock timeouts, resets and serialization failures say nothing about the snapshot.
+    expect(isPermanentSnapshotFailure(new Error("canceling statement due to lock timeout"))).toBe(false);
+    expect(isPermanentSnapshotFailure(Object.assign(new Error("serialization failure"), { code: "P2034" }))).toBe(false);
   });
 });

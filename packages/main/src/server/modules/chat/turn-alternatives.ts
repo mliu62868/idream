@@ -9,6 +9,7 @@
 import { Prisma, type ChatTurn } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { retireCompanionMemoryAttempt, scheduleCompanionMemoryProjection } from "./companion-memory-authority";
+import { appendChatExchangeCorrected } from "./exchange-metrics";
 import { attachmentAttempt } from "./turn-scope";
 import { ACTIVE_ASSISTANT_STATES, jsonRecord, toJson } from "./turn-ledger-support";
 
@@ -131,6 +132,10 @@ export async function selectLockedReplyVersion(tx: Prisma.TransactionClient, inp
     },
   });
   await tx.chatTurnAlternative.delete({ where: { turnId_ordinal: { turnId: turn.id, ordinal } } });
+  // The exchange's counted reply is now the adopted version, not the latest completion.
+  await appendChatExchangeCorrected(tx, turn, {
+    userId, correctionType: "selected", correctionRevision: selected.attempt, selectedAssistantMessageId: turn.assistantMessageId,
+  }, now);
   // A rebuild exports every sent Turn when it runs, including this one.
   if (!memory.rebuilt && selected.memoryEnabled) {
     await scheduleCompanionMemoryProjection(tx, { userId, characterId });
