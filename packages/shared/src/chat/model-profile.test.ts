@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  chatThinkingParameters,
+  isInkling2MiniModel,
   isOpenRouterBaseUrl,
   requiredChatCanaryProfiles,
   resolveChatModelProfile,
@@ -36,7 +38,7 @@ describe("chat model profile", () => {
       PIPELINE_TIMEOUT_MS: "1",
     })).toMatchObject({
       provider: "mock",
-      model: "Inkling-2-Mini-Uncensored-oQ8-mtp",
+      model: "Inkling-2-Mini-Unbound-v3-oQ8-mtp",
       baseUrl: "http://127.0.0.1:8061/v1",
       apiKey: "",
       firstTokenTimeoutMs: 45_000,
@@ -90,5 +92,30 @@ describe("chat model profile", () => {
       CHAT_MODEL_DELUXE: "deluxe",
     });
     expect(canaries).toMatchObject([{ tier: "free", profile: { model: "base" } }]);
+  });
+
+  it("matches all Inkling-2-Mini variants for zero-budget non-thinking parameters", () => {
+    for (const model of [
+      "Inkling-2-Mini",
+      "Inkling-2-Mini-Uncensored-oQ8-mtp",
+      "Inkling-2-Mini-Unbound-Fast-AntiOverthink-oQ4e",
+      "nokeepai/Inkling-2-Mini-Unbound",
+      "nokeepai--Inkling-2-Mini-Unbound-v3-oQ8-mtp",
+    ]) {
+      expect(isInkling2MiniModel(model)).toBe(true);
+      expect(chatThinkingParameters(model, false)).toEqual({
+        chat_template_kwargs: { enable_thinking: false, reasoning_effort: "none" },
+        thinking_budget: 0,
+      });
+      expect(chatThinkingParameters(model, true)).toEqual({
+        chat_template_kwargs: { enable_thinking: true },
+      });
+    }
+    for (const model of [undefined, "", "Qwen3.5-4B-oQ8-mtp", "Inkling-2-Minimax", "deepseek/test"]) {
+      expect(isInkling2MiniModel(model)).toBe(false);
+      expect(chatThinkingParameters(model, false)).toEqual({
+        chat_template_kwargs: { enable_thinking: false },
+      });
+    }
   });
 });

@@ -171,7 +171,11 @@ describe("OpenAI-compatible Pi adapter", () => {
     expect(bodies[0]!.messages).toContainEqual({ role: "tool", tool_call_id: "read-1", content: "The original wording." });
   });
 
-  it("gives Inkling's media selection and independent body their own reasoning settings", async () => {
+  it.each([
+    "Inkling-2-Mini-Uncensored-oQ8-mtp",
+    "Inkling-2-Mini-Unbound-Fast-AntiOverthink-oQ4e",
+    "nokeepai/Inkling-2-Mini-Unbound",
+  ])("gives Inkling's media selection and independent body their own reasoning settings (%s)", async model => {
     const baseUrl = "http://127.0.0.1:8061/v1";
     const bodies: Record<string, unknown>[] = [];
     const adapter = adapterFor(baseUrl, async (_url, init) => {
@@ -179,7 +183,7 @@ describe("OpenAI-compatible Pi adapter", () => {
       return new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
     }, { profile: {
       tier: "test", adapter: "openai-compatible-v1", provider: "openai", baseUrl,
-      model: "Inkling-2-Mini-Uncensored-oQ8-mtp", supportsTools: true, maxOutputTokens: 8_000, answerMaxOutputTokens: 256,
+      model, supportsTools: true, maxOutputTokens: 8_000, answerMaxOutputTokens: 256,
       timeout: { firstTokenMs: 1_000, idleMs: 1_000 },
       sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
     } });

@@ -24,7 +24,7 @@ export interface ChatModelProfile {
 
 type Environment = Record<string, string | undefined>;
 
-export const INKLING_2_MINI_OQ8_MODEL = "Inkling-2-Mini-Uncensored-oQ8-mtp";
+export const INKLING_2_MINI_OQ8_MODEL = "Inkling-2-Mini-Unbound-v3-oQ8-mtp";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8061/v1";
 const DEFAULT_TIMEOUT_MS = 45_000;
 
@@ -87,8 +87,14 @@ export function isOpenRouterBaseUrl(baseUrl: string): boolean {
   return new URL(baseUrl).hostname === "openrouter.ai";
 }
 
+export function isInkling2MiniModel(model: string | undefined): boolean {
+  if (!model) return false;
+  const leaf = (model.trim().split("/").at(-1) ?? "").split("--").at(-1) ?? "";
+  return /^inkling-2-mini(?:$|[-\s_.])/i.test(leaf);
+}
+
 export function chatThinkingParameters(model: string | undefined, enabled: boolean) {
-  if (!enabled && model === INKLING_2_MINI_OQ8_MODEL) {
+  if (!enabled && isInkling2MiniModel(model)) {
     // Inkling can still emit reasoning at effort "none". A zero oMLX budget
     // prevents it from consuming the output allowance of non-thinking calls.
     return {

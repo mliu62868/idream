@@ -236,12 +236,12 @@ usage receipt. Missing receipts keep usage unknown; a missing reasoning subtotal
 stays null while known prompt/completion totals remain usable. Reasoning is already
 included in completion totals and is never added again.
 Companion generation enables hidden reasoning on the configured Chat model.
-The default oMLX model is `Inkling-2-Mini-Uncensored-oQ8-mtp`.
+The default oMLX model is `Inkling-2-Mini-Unbound-v3-oQ8-mtp`.
 Its reasoning and answer share the prepared model output budget; Quick's 256-token
 answer setting must not cap that combined request. Reply length remains a product
 preference: this provider has no independent hard cap for visible tokens while
 thinking is enabled. Compaction, general structured extraction, warmup and igrep
-helpers keep reasoning disabled. On oMLX, the default Inkling model uses a zero
+helpers keep reasoning disabled. On oMLX, Inkling-2-Mini variants use a zero
 thinking budget for these requests. Tool choice remains automatic. Unfinished
 reasoning stays private.
 The responding Character's history stays in the assistant role; other Characters'

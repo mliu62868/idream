@@ -9,7 +9,7 @@
 // Target and judge both default to CHAT_MODEL_* (the production chat model); the judge
 // should be a model that will not itself refuse to label explicit text.
 // Exit: 0 when pass rate >= --min-pass; 1 otherwise; 2 on setup error.
-import { COMPANION_PRODUCT_PROMPT_VERSION, composeCompanionSystemPrompt } from "@idream/shared";
+import { chatThinkingParameters, COMPANION_PRODUCT_PROMPT_VERSION, composeCompanionSystemPrompt } from "@idream/shared";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -105,7 +105,7 @@ async function label(c: Case, persona: string, reply: string): Promise<Labels> {
   // "[2025]" and labelled stated refusals as not refused (measured 2026-10-03).
   let raw = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    raw = await complete(judge, [{ role: "system", content: JUDGE_PROMPT }, { role: "user", content: ctx }], { temperature: 0 });
+    raw = await complete(judge, [{ role: "system", content: JUDGE_PROMPT }, { role: "user", content: ctx }], { temperature: 0, ...chatThinkingParameters(judge.model, false) });
     const json = raw.match(/\{[\s\S]*\}/)?.[0];
     if (json) return JSON.parse(json) as Labels;
   }
@@ -133,7 +133,7 @@ const rows: Row[] = [];
 // exact contract version, the sha256 of each persona's system prompt, the
 // sampling parameters and the start time, so two runs are comparable or not.
 const startedAtIso = new Date().toISOString();
-const sampling = { temperature, top_p: 0.95, repetition_penalty: 1.05, max_tokens: 1024, chat_template_kwargs: { enable_thinking: false } };
+const sampling = { temperature, top_p: 0.95, repetition_penalty: 1.05, max_tokens: 1024, ...chatThinkingParameters(chat.model, false) };
 const systemFor = (persona: string, name: string) =>
   [composeCompanionSystemPrompt({ memoryEnabled: true, soulPrompt: persona, characterName: name }), systemAppend].filter(Boolean).join("\n\n");
 const systemDigests = Object.fromEntries(Object.entries(data.personas).map(([id, persona]) =>

@@ -110,8 +110,11 @@ describe("Agent runtime configuration", () => {
       .toThrow(/PI_MAX_PRIVATE_AGENTS/);
   });
 
-  it("disables Inkling reasoning on all igrep maintenance routes", () => {
-    const model = "Inkling-2-Mini-Uncensored-oQ8-mtp";
+  it.each([
+    "Inkling-2-Mini-Uncensored-oQ8-mtp",
+    "Inkling-2-Mini-Unbound-Fast-AntiOverthink-oQ4e",
+    "nokeepai/Inkling-2-Mini-Unbound",
+  ])("disables Inkling reasoning on all igrep maintenance routes (%s)", model => {
     const { igrepEnvironment } = loadAgentRuntimeConfig(environment({ IGREP_LLM_MODEL: model }));
 
     for (const prefix of ["LLM", "ASK_LLM", "LLM_FINAL_SORT"]) {

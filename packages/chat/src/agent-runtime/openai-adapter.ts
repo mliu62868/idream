@@ -6,7 +6,7 @@ import {
   type AssistantMessageEventStream, type ToolCall,
 } from "@earendil-works/pi-ai";
 
-import { chatThinkingParameters, INKLING_2_MINI_OQ8_MODEL, isOpenRouterBaseUrl } from "@idream/shared";
+import { chatThinkingParameters, isInkling2MiniModel, isOpenRouterBaseUrl } from "@idream/shared";
 import { COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 import type { CompanionModelRequestEvidence, CompanionModelTokenUsage, PreparedTurnProfile } from "./contracts";
 import { estimateModelRequestInputTokens } from "./model-request-format";
@@ -408,7 +408,7 @@ export class OpenAiCompatibleAdapter {
     const { profile, maxInputTokens, responseFormat } = this.config;
     const compacting = options.purpose === "compaction";
     const mediaBody = options.purpose === "media_body";
-    const inkling = profile.model === INKLING_2_MINI_OQ8_MODEL;
+    const inkling = isInkling2MiniModel(profile.model);
     const thinking = (!options.purpose && !responseFormat)
       || (!inkling && (mediaBody || options.purpose === "media_extraction"));
     const input = modelRequestInput(messages);

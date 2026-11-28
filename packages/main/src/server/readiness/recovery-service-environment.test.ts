@@ -385,7 +385,7 @@ describe("recovery service environment", () => {
       expect(env).toMatchObject({
         CHAT_MODEL_PROVIDER: "openai",
         CHAT_MODEL_BASE_URL: "http://127.0.0.1:8061/v1",
-        CHAT_MODEL_NAME: "Inkling-2-Mini-Uncensored-oQ8-mtp",
+        CHAT_MODEL_NAME: "Inkling-2-Mini-Unbound-v3-oQ8-mtp",
         CHAT_MODEL_API_KEY: "",
       });
     } finally {
